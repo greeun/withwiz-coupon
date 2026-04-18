@@ -1,0 +1,74 @@
+name: coupon CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: coupon_test
+        ports:
+          - 5442:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d coupon_test"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      DATABASE_URL: "postgresql://postgres:postgres@localhost:5442/coupon_test?schema=public"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: packages/coupon/package-lock.json
+
+      - name: Install
+        working-directory: packages/coupon
+        run: npm install
+
+      - name: Prisma generate
+        working-directory: packages/coupon
+        run: npm run prisma:generate
+
+      - name: DB push
+        working-directory: packages/coupon
+        run: npm run db:push
+
+      - name: Typecheck
+        working-directory: packages/coupon
+        run: npm run typecheck
+
+      - name: Isolation check
+        working-directory: packages/coupon
+        run: npm run check:isolation
+
+      - name: Build
+        working-directory: packages/coupon
+        run: npm run build
+
+      - name: Test
+        working-directory: packages/coupon
+        run: npm run test:coverage
+
+      - name: Concurrency x3
+        working-directory: packages/coupon
+        run: npm run test:concurrency:x3
+
+      - name: Pack (dry run)
+        working-directory: packages/coupon
+        run: npm pack --dry-run

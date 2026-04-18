@@ -1,0 +1,20 @@
+{
+  "name": "coupon-consumer-sample",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "prisma:generate": "prisma generate --schema=prisma/schema.prisma",
+    "db:push": "prisma db push --schema=prisma/schema.prisma --skip-generate --accept-data-loss"
+  },
+  "dependencies": {
+    "@withwiz/coupon": "file:../..",
+    "@prisma/client": "^6.0.0"
+  },
+  "devDependencies": {
+    "prisma": "^6.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  }
+}

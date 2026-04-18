@@ -1,0 +1,145 @@
+// Consumer sample schema — simulates a real consumer app that copies the
+// @withwiz/coupon fragment into their own schema.prisma.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// Consumer's own models (unrelated to coupon)
+// ============================================================================
+
+model ConsumerOrder {
+  id        String   @id @default(cuid())
+  tenantId  String   @db.VarChar(64)
+  amount    Int
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, createdAt])
+}
+
+// ============================================================================
+// Begin fragment from @withwiz/coupon/prisma/fragment.prisma
+// ============================================================================
+
+model Coupon {
+  id                    String         @id @default(cuid())
+  tenantId              String         @db.VarChar(64)
+  campaignId            String?
+  code                  String         @db.VarChar(64)
+  status                CouponStatus   @default(ACTIVE)
+  discount              Json
+  startsAt              DateTime?
+  endsAt                DateTime?
+  maxRedemptions        Int?
+  redeemedCount         Int            @default(0)
+  maxRedemptionsPerUser Int?
+  eligibility           Json
+  metadata              Json?
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
+
+  campaign              Campaign?      @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  issuances             CouponIssuance[]
+  redemptions           CouponRedemption[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId, status, endsAt])
+  @@index([campaignId])
+  @@index([tenantId, createdAt])
+}
+
+model Campaign {
+  id             String         @id @default(cuid())
+  tenantId       String         @db.VarChar(64)
+  name           String         @db.VarChar(200)
+  status         CampaignStatus @default(ACTIVE)
+  discount       Json
+  eligibility    Json
+  startsAt       DateTime?
+  endsAt         DateTime?
+  maxCoupons     Int?
+  issuedCount    Int            @default(0)
+  metadata       Json?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  coupons        Coupon[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId, status])
+  @@index([tenantId, createdAt])
+}
+
+model CouponIssuance {
+  id              String   @id @default(cuid())
+  tenantId        String   @db.VarChar(64)
+  couponId        String
+  issuedToUserId  String?
+  issuedBy        String?
+  issuedAt        DateTime @default(now())
+  metadata        Json?
+
+  coupon          Coupon   @relation(fields: [couponId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, couponId])
+  @@index([tenantId, issuedToUserId, issuedAt])
+  @@index([issuedAt])
+}
+
+model CouponRedemption {
+  id                 String   @id @default(cuid())
+  tenantId           String   @db.VarChar(64)
+  couponId           String
+  redeemedByUserId   String?
+  orderRef           String?  @db.VarChar(128)
+  discountAmount     Int
+  currency           String   @db.VarChar(3)
+  redeemedAt         DateTime @default(now())
+  metadata           Json?
+
+  coupon             Coupon   @relation(fields: [couponId], references: [id], onDelete: Cascade)
+
+  @@unique([couponId, redeemedByUserId, orderRef])
+  @@index([tenantId, couponId, redeemedAt])
+  @@index([tenantId, redeemedByUserId, redeemedAt])
+  @@index([redeemedAt])
+}
+
+model CouponAuditLog {
+  id           String   @id @default(cuid())
+  tenantId     String   @db.VarChar(64)
+  action       String   @db.VarChar(50)
+  resourceId   String?  @db.VarChar(64)
+  resourceType String?  @db.VarChar(30)
+  actorId      String?
+  details      Json?
+  createdAt    DateTime @default(now())
+
+  @@index([tenantId, createdAt])
+  @@index([tenantId, resourceType, resourceId])
+  @@index([action])
+}
+
+enum CouponStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  EXPIRED
+  EXHAUSTED
+  ARCHIVED
+}
+
+enum CampaignStatus {
+  ACTIVE
+  CLOSED
+}
+
+// ============================================================================
+// End fragment
+// ============================================================================

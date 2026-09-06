@@ -7,3 +7,8 @@ coverage
 !.env.example
 .DS_Store
 .vitest-cache
+
+# Local agent tooling state (machine-local, never committed)
+.claude/
+.axt-profile.json
+.axt-profile.json.bak

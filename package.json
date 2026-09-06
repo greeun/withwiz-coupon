@@ -5,6 +5,27 @@
   "description": "Multi-tenant, concurrency-safe coupon domain core for Prisma + Node.js applications",
   "license": "MIT",
   "author": "withwiz",
+  "private": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/greeun/withwiz-coupon.git"
+  },
+  "homepage": "https://github.com/greeun/withwiz-coupon#readme",
+  "bugs": {
+    "url": "https://github.com/greeun/withwiz-coupon/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "coupon",
+    "discount",
+    "promotion",
+    "campaign",
+    "prisma",
+    "multi-tenant",
+    "concurrency"
+  ],
   "sideEffects": false,
   "type": "module",
   "main": "./dist/index.cjs",
@@ -25,8 +46,7 @@
     "LICENSE"
   ],
   "engines": {
-    "node": ">=18.17.0",
-    "npm": ">=10.0.0"
+    "node": ">=18.17.0"
   },
   "scripts": {
     "build": "tsup",

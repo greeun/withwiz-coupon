@@ -16,7 +16,7 @@ export function getPrisma(): PrismaClient {
     if (!process.env.DATABASE_URL) {
       // allow-env: test harness only — required pre-condition for Postgres tests.
       process.env.DATABASE_URL =
-        "postgresql://postgres:postgres@localhost:5442/coupon_test?schema=public";
+        "postgresql://postgres:postgres@localhost:13011/coupon_test?schema=public";
     }
     _client = new PrismaClient({
       // Intentionally suppress Prisma's built-in error log stream in tests.

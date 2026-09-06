@@ -419,11 +419,20 @@ export interface DelegateLike<TRow = Record<string, unknown>> {
 }
 
 export interface PrismaTxLike {
-  coupon: DelegateLike;
-  campaign: DelegateLike;
-  couponIssuance: DelegateLike;
-  couponRedemption: DelegateLike;
-  couponAuditLog: DelegateLike;
+  /**
+   * Delegates produced by the unmodified schema fragment.
+   *
+   * They are optional on purpose: a consumer who renamed the models to avoid
+   * a collision (and declared the mapping through `config.models`) still
+   * satisfies this interface. Delegates are never read off this type
+   * directly — `createDelegateResolver` looks them up by their configured
+   * name at call time and raises `InvalidModelNameError` when one is absent.
+   */
+  coupon?: DelegateLike;
+  campaign?: DelegateLike;
+  couponIssuance?: DelegateLike;
+  couponRedemption?: DelegateLike;
+  couponAuditLog?: DelegateLike;
   /**
    * Parameterized raw query — used only for `SELECT ... FOR UPDATE` row locks
    * in the redeem() concurrency path. Tagged-template style.

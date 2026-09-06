@@ -1,8 +1,9 @@
 /**
- * Audit log recorder. Writes CouponAuditLog rows inside the given transaction.
+ * Audit log recorder. Writes audit rows through the delegate the caller
+ * resolved, so a renamed audit model stays transparent here.
  */
 
-import type { PrismaTxLike } from "./domain/types.js";
+import type { DelegateLike } from "./domain/types.js";
 
 export type AuditWriteInput = {
   tenantId: string;
@@ -14,10 +15,10 @@ export type AuditWriteInput = {
 };
 
 export async function writeAudit(
-  tx: PrismaTxLike,
+  auditLog: DelegateLike,
   input: AuditWriteInput
 ): Promise<void> {
-  await tx.couponAuditLog.create({
+  await auditLog.create({
     data: {
       tenantId: input.tenantId,
       action: input.action,

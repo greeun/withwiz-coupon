@@ -74,6 +74,13 @@ import {
 } from "./mapping.js";
 import { writeAudit } from "./audit.js";
 import {
+  createDelegateResolver,
+  lockCouponRow,
+  resolveModelNames,
+  resolveTableNames,
+} from "./delegates.js";
+import type { DelegateResolver, ModelNameMap, TableNameMap } from "./delegates.js";
+import {
   assertEligibility,
   assertMetadata,
   assertPaginationLimit,
@@ -96,6 +103,22 @@ export type CouponClientConfig = {
   events?: CouponEventHandler;
   now?: () => Date;
   logger?: CouponLogger;
+  /**
+   * Prisma delegate names, when the schema fragment's models were renamed to
+   * avoid a collision with the consumer's own schema. Defaults to
+   * `{ coupon, campaign, couponIssuance, couponRedemption, couponAuditLog }`.
+   *
+   * @example { campaign: "couponCampaign" }
+   */
+  models?: Partial<ModelNameMap>;
+  /**
+   * Physical table names, used by the `SELECT ... FOR UPDATE` row lock in
+   * `redeem()`. Defaults to each delegate name capitalized, which is Prisma's
+   * own convention; pass this only when the schema uses `@@map`.
+   *
+   * @example { coupon: "coupons" }
+   */
+  tables?: Partial<TableNameMap>;
 };
 
 /**
@@ -124,6 +147,8 @@ type ResolvedConfig = Required<
   Pick<CouponClientConfig, "prisma" | "idGenerator" | "codeGenerator" | "now" | "events" | "logger">
 > & {
   defaultTenantId?: string;
+  models: ModelNameMap;
+  tables: TableNameMap;
 };
 
 function resolveConfig(config: CouponClientConfig): ResolvedConfig {
@@ -133,6 +158,7 @@ function resolveConfig(config: CouponClientConfig): ResolvedConfig {
   if (!config.prisma || typeof config.prisma !== "object") {
     throw new ValidationError("createCouponClient: prisma client is required");
   }
+  const models = resolveModelNames(config.models);
   return {
     prisma: config.prisma,
     defaultTenantId: config.defaultTenantId,
@@ -141,6 +167,8 @@ function resolveConfig(config: CouponClientConfig): ResolvedConfig {
     events: config.events ?? NOOP_EVENTS,
     now: config.now ?? (() => new Date()), // allow-now: default fallback when config.now is omitted
     logger: config.logger ?? NOOP_LOGGER,
+    models,
+    tables: resolveTableNames(models, config.tables),
   };
 }
 
@@ -168,6 +196,7 @@ type LazyOutcome =
   | { kind: "reject"; reason: keyof typeof COUPON_REJECT_REASON; coupon: Coupon };
 
 async function resolveLazyStatus(
+  delegates: DelegateResolver,
   tx: PrismaTxLike,
   coupon: Coupon,
   now: Date
@@ -193,7 +222,7 @@ async function resolveLazyStatus(
   // EXPIRED check — lazy update
   if (coupon.endsAt && now.getTime() >= coupon.endsAt.getTime()) {
     if (coupon.status !== COUPON_STATUS.EXPIRED) {
-      await tx.coupon.updateMany({
+      await delegates.coupon(tx).updateMany({
         where: {
           id: coupon.id,
           tenantId: coupon.tenantId,
@@ -215,7 +244,7 @@ async function resolveLazyStatus(
     coupon.redeemedCount >= coupon.maxRedemptions
   ) {
     if (coupon.status !== COUPON_STATUS.EXHAUSTED) {
-      await tx.coupon.updateMany({
+      await delegates.coupon(tx).updateMany({
         where: {
           id: coupon.id,
           tenantId: coupon.tenantId,
@@ -301,6 +330,11 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
   const cfg = resolveConfig(config);
   const prisma = cfg.prisma;
 
+  // --- delegate resolver ------------------------------------------------
+  // Every Prisma delegate access below goes through this, so a consumer that
+  // renamed the fragment's models only has to declare `config.models`.
+  const delegates = createDelegateResolver(cfg.models, cfg.tables);
+
   // --- tenantId resolver (short form) -----------------------------------
   const tid = (v: string | undefined) => resolveTenantId(v, cfg.defaultTenantId);
 
@@ -351,7 +385,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
       sanitizeCode(code);
       const row = { ...data, code: canonicalizeCode(code), tenantId };
       try {
-        const created = await tx.coupon.create({ data: row });
+        const created = await delegates.coupon(tx).create({ data: row });
         return rowToCoupon(created as Record<string, unknown>);
       } catch (err) {
         lastError = err;
@@ -406,7 +440,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
           },
           1 // user-supplied code: no retry; generator: also fine with 1 here but default generator inherently retries below if needed
         );
-        await writeAudit(tx, {
+        await writeAudit(delegates.couponAuditLog(tx), {
           tenantId,
           action: AUDIT_ACTION.COUPON_CREATED,
           resourceId: coupon.id,
@@ -433,7 +467,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
       const now = cfg.now();
 
       const issuance = await prisma.$transaction(async (tx) => {
-        const couponRow = await tx.coupon.findFirst({
+        const couponRow = await delegates.coupon(tx).findFirst({
           where: { id: input.couponId, tenantId },
         });
         if (!couponRow) throw new CouponNotFoundError("Coupon not found", { tenantId, couponId: input.couponId });
@@ -442,7 +476,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
           throw new CouponArchivedError(undefined, { tenantId, couponId: coupon.id });
         }
 
-        const row = await tx.couponIssuance.create({
+        const row = await delegates.couponIssuance(tx).create({
           data: {
             id: cfg.idGenerator(),
             tenantId,
@@ -453,7 +487,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
           },
         });
         const issuance = rowToIssuance(row as Record<string, unknown>);
-        await writeAudit(tx, {
+        await writeAudit(delegates.couponAuditLog(tx), {
           tenantId,
           action: AUDIT_ACTION.COUPON_ISSUED,
           resourceId: coupon.id,
@@ -497,7 +531,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
             try {
               sanitizeCode(code);
               const canonical = canonicalizeCode(code);
-              const row = await tx.coupon.create({
+              const row = await delegates.coupon(tx).create({
                 data: {
                   id: cfg.idGenerator(),
                   tenantId,
@@ -550,7 +584,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
           //
           // This mirrors the `redeem` conditional UPDATE pattern and
           // guarantees the I4 invariant under concurrent issue() calls.
-          const campRow = await tx.campaign.findFirst({
+          const campRow = await delegates.campaign(tx).findFirst({
             where: { id: input.campaignId, tenantId },
           });
           if (!campRow) {
@@ -570,7 +604,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
           // Inline where clause so the `updateMany( ... issuedCount: { lte: ... } ...)`
           // pattern is immediately grep-visible for sprint_contract §6.4
           // AMENDMENT-2 (positive evidence of conditional compare-and-swap).
-          const upd = await tx.campaign.updateMany({
+          const upd = await delegates.campaign(tx).updateMany({
             where: {
               id: input.campaignId,
               tenantId,
@@ -587,7 +621,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
           if (upd.count === 0) {
             // Either CLOSED (race: closed between our pre-check and updateMany)
             // or over capacity. Re-check status for a precise error.
-            const post = await tx.campaign.findFirst({
+            const post = await delegates.campaign(tx).findFirst({
               where: { id: input.campaignId, tenantId },
             });
             if (post) {
@@ -606,7 +640,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
           }
         }
 
-        await writeAudit(tx, {
+        await writeAudit(delegates.couponAuditLog(tx), {
           tenantId,
           action: AUDIT_ACTION.COUPON_ISSUED_BULK,
           resourceId: input.campaignId ?? null,
@@ -637,7 +671,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
       sanitizeCode(args.code);
       const canonical = canonicalizeCode(args.code);
       // [F] query with tenantId AND code — avoid enumeration leak.
-      const row = await prisma.coupon.findFirst({
+      const row = await delegates.coupon(prisma).findFirst({
         where: { tenantId, code: canonical },
       });
       return row ? rowToCoupon(row as Record<string, unknown>) : null;
@@ -648,7 +682,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
       if (!args.id || typeof args.id !== "string") {
         throw new ValidationError("id is required");
       }
-      const row = await prisma.coupon.findFirst({
+      const row = await delegates.coupon(prisma).findFirst({
         where: { id: args.id, tenantId },
       });
       return row ? rowToCoupon(row as Record<string, unknown>) : null;
@@ -661,7 +695,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
       if (args.campaignId) where.campaignId = args.campaignId;
       if (args.status) where.status = args.status;
       return paginate(
-        prisma.coupon,
+        delegates.coupon(prisma),
         where,
         limit,
         args.cursor,
@@ -674,7 +708,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
       const tenantId = tid(args.tenantId);
       const now = cfg.now();
       const coupon = await prisma.$transaction(async (tx) => {
-        const row = await tx.coupon.findFirst({
+        const row = await delegates.coupon(tx).findFirst({
           where: { id: args.id, tenantId },
         });
         if (!row) throw new CouponNotFoundError("Coupon not found", { tenantId, couponId: args.id });
@@ -682,11 +716,11 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
         if (existing.status === COUPON_STATUS.ARCHIVED) {
           throw new CouponArchivedError(undefined, { tenantId, couponId: existing.id });
         }
-        const updated = await tx.coupon.update({
+        const updated = await delegates.coupon(tx).update({
           where: { id: args.id },
           data: { status: COUPON_STATUS.PAUSED },
         });
-        await writeAudit(tx, {
+        await writeAudit(delegates.couponAuditLog(tx), {
           tenantId,
           action: AUDIT_ACTION.COUPON_PAUSED,
           resourceId: args.id,
@@ -708,7 +742,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
       const tenantId = tid(args.tenantId);
       const now = cfg.now();
       const coupon = await prisma.$transaction(async (tx) => {
-        const row = await tx.coupon.findFirst({
+        const row = await delegates.coupon(tx).findFirst({
           where: { id: args.id, tenantId },
         });
         if (!row) throw new CouponNotFoundError("Coupon not found", { tenantId, couponId: args.id });
@@ -716,11 +750,11 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
         if (existing.status === COUPON_STATUS.ARCHIVED) {
           throw new CouponArchivedError(undefined, { tenantId, couponId: existing.id });
         }
-        const updated = await tx.coupon.update({
+        const updated = await delegates.coupon(tx).update({
           where: { id: args.id },
           data: { status: COUPON_STATUS.ACTIVE },
         });
-        await writeAudit(tx, {
+        await writeAudit(delegates.couponAuditLog(tx), {
           tenantId,
           action: AUDIT_ACTION.COUPON_RESUMED,
           resourceId: args.id,
@@ -742,7 +776,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
       const tenantId = tid(args.tenantId);
       const now = cfg.now();
       const coupon = await prisma.$transaction(async (tx) => {
-        const row = await tx.coupon.findFirst({
+        const row = await delegates.coupon(tx).findFirst({
           where: { id: args.id, tenantId },
         });
         if (!row) throw new CouponNotFoundError("Coupon not found", { tenantId, couponId: args.id });
@@ -750,11 +784,11 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
         if (existing.status === COUPON_STATUS.ARCHIVED) {
           throw new CouponArchivedError(undefined, { tenantId, couponId: existing.id });
         }
-        const updated = await tx.coupon.update({
+        const updated = await delegates.coupon(tx).update({
           where: { id: args.id },
           data: { status: COUPON_STATUS.ARCHIVED },
         });
-        await writeAudit(tx, {
+        await writeAudit(delegates.couponAuditLog(tx), {
           tenantId,
           action: AUDIT_ACTION.COUPON_ARCHIVED,
           resourceId: args.id,
@@ -786,13 +820,13 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
 
     return prisma.$transaction(async (tx) => {
       // [F] WHERE tenantId AND code — enumeration-safe.
-      const row = await tx.coupon.findFirst({
+      const row = await delegates.coupon(tx).findFirst({
         where: { tenantId, code: canonical },
       });
       if (!row) return { ok: false, reason: COUPON_REJECT_REASON.NOT_FOUND };
       let coupon = rowToCoupon(row as Record<string, unknown>);
 
-      const lazy = await resolveLazyStatus(tx, coupon, now);
+      const lazy = await resolveLazyStatus(delegates, tx, coupon, now);
       if (lazy.kind === "reject") {
         return { ok: false, reason: COUPON_REJECT_REASON[lazy.reason] };
       }
@@ -810,7 +844,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
 
       // Per-user limit pre-check (non-destructive)
       if (coupon.maxRedemptionsPerUser !== null && input.userId) {
-        const count = await tx.couponRedemption.count({
+        const count = await delegates.couponRedemption(tx).count({
           where: {
             tenantId,
             couponId: coupon.id,
@@ -857,7 +891,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
 
     // First, locate the coupon by (tenantId, code) — this is tenant-scoped
     // and enumeration-safe.
-    const lookup = await tx.coupon.findFirst({
+    const lookup = await delegates.coupon(tx).findFirst({
       where: { tenantId, code: canonical },
       select: { id: true },
     });
@@ -868,9 +902,12 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
     // serializes concurrent redeem() calls for the same coupon under READ
     // COMMITTED isolation, preventing per-user race TOCTOU without needing
     // SERIALIZABLE (which would force expensive retries).
-    const locked = await tx.$queryRaw<Array<Record<string, unknown>>>`
-      SELECT * FROM "Coupon" WHERE "id" = ${couponId} AND "tenantId" = ${tenantId} FOR UPDATE
-    `;
+    const locked = await lockCouponRow(
+      tx,
+      delegates.tables.coupon,
+      couponId,
+      tenantId
+    );
     if (!Array.isArray(locked) || locked.length === 0) {
       throw new CouponNotFoundError("Coupon not found", { tenantId, couponId });
     }
@@ -897,7 +934,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
     }
     if (coupon.endsAt && now.getTime() >= coupon.endsAt.getTime()) {
       // lazy transition
-      await tx.coupon.updateMany({
+      await delegates.coupon(tx).updateMany({
         where: {
           id: coupon.id,
           tenantId,
@@ -924,7 +961,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
 
     // Per-user limit pre-check (non-atomic; post-commit re-check below enforces it atomically)
     if (coupon.maxRedemptionsPerUser !== null && input.userId) {
-      const userCount = await tx.couponRedemption.count({
+      const userCount = await delegates.couponRedemption(tx).count({
         where: {
           tenantId,
           couponId: coupon.id,
@@ -960,7 +997,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
       // condition: redeemedCount < maxRedemptions
       updWhere.redeemedCount = { lt: coupon.maxRedemptions };
     }
-    const upd = await tx.coupon.updateMany({
+    const upd = await delegates.coupon(tx).updateMany({
       where: updWhere,
       data: w({ redeemedCount: { increment: 1 } }),
     });
@@ -973,7 +1010,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
     }
 
     // Re-read for fresh redeemedCount & maybe flip status to EXHAUSTED.
-    const refreshed = await tx.coupon.findFirst({
+    const refreshed = await delegates.coupon(tx).findFirst({
       where: { id: coupon.id, tenantId },
     });
     if (!refreshed) {
@@ -987,7 +1024,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
       coupon.redeemedCount >= coupon.maxRedemptions &&
       coupon.status !== COUPON_STATUS.EXHAUSTED
     ) {
-      await tx.coupon.updateMany({
+      await delegates.coupon(tx).updateMany({
         where: {
           id: coupon.id,
           tenantId,
@@ -1005,7 +1042,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
     // (Postgres refuses with "transaction aborted").
     let redemption: Redemption;
     try {
-      const inserted = await tx.couponRedemption.create({
+      const inserted = await delegates.couponRedemption(tx).create({
         data: {
           id: cfg.idGenerator(),
           tenantId,
@@ -1031,7 +1068,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
     // transaction: COUNT rows with same (couponId, userId) including the one
     // we just inserted. If above the cap, throw — Prisma rolls back.
     if (coupon.maxRedemptionsPerUser !== null && input.userId) {
-      const userCountFinal = await tx.couponRedemption.count({
+      const userCountFinal = await delegates.couponRedemption(tx).count({
         where: {
           tenantId,
           couponId: coupon.id,
@@ -1047,7 +1084,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
       }
     }
 
-    await writeAudit(tx, {
+    await writeAudit(delegates.couponAuditLog(tx), {
       tenantId,
       action: AUDIT_ACTION.COUPON_REDEEMED,
       resourceId: coupon.id,
@@ -1085,7 +1122,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
       // Record rejection audit in a *separate* transaction so it isn't rolled back.
       if (err instanceof CouponError) {
         try {
-          await prisma.couponAuditLog.create({
+          await delegates.couponAuditLog(prisma).create({
             data: {
               id: cfg.idGenerator(),
               tenantId,
@@ -1152,7 +1189,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
       const now = cfg.now();
 
       const campaign = await prisma.$transaction(async (tx) => {
-        const row = await tx.campaign.create({
+        const row = await delegates.campaign(tx).create({
           data: {
             id: cfg.idGenerator(),
             tenantId,
@@ -1167,7 +1204,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
           },
         });
         const campaign = rowToCampaign(row as Record<string, unknown>);
-        await writeAudit(tx, {
+        await writeAudit(delegates.couponAuditLog(tx), {
           tenantId,
           action: AUDIT_ACTION.CAMPAIGN_CREATED,
           resourceId: campaign.id,
@@ -1190,7 +1227,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
     async get(args) {
       const tenantId = tid(args.tenantId);
       if (!args.id) throw new ValidationError("id is required");
-      const row = await prisma.campaign.findFirst({
+      const row = await delegates.campaign(prisma).findFirst({
         where: { id: args.id, tenantId },
       });
       return row ? rowToCampaign(row as Record<string, unknown>) : null;
@@ -1202,7 +1239,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
       const where: Record<string, unknown> = { tenantId };
       if (args.status) where.status = args.status;
       return paginate(
-        prisma.campaign,
+        delegates.campaign(prisma),
         where,
         limit,
         args.cursor,
@@ -1233,7 +1270,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
       // issueBulk payload; the AUTHORITATIVE capacity + CLOSED checks happen
       // INSIDE issueBulk's tx via a conditional updateMany that enforces spec
       // §5.5 I4 (issuedCount <= maxCoupons) atomically under concurrency.
-      const campRow = await prisma.campaign.findFirst({
+      const campRow = await delegates.campaign(prisma).findFirst({
         where: { id: args.campaignId, tenantId },
       });
       if (!campRow) {
@@ -1267,7 +1304,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
     async summary(args) {
       const tenantId = tid(args.tenantId);
       if (!args.id) throw new ValidationError("id is required");
-      const campRow = await prisma.campaign.findFirst({
+      const campRow = await delegates.campaign(prisma).findFirst({
         where: { id: args.id, tenantId },
       });
       if (!campRow) {
@@ -1279,7 +1316,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
       const campaign = rowToCampaign(campRow as Record<string, unknown>);
 
       // Aggregate redemptions across all coupons of this campaign.
-      const couponRows = await prisma.coupon.findMany({
+      const couponRows = await delegates.coupon(prisma).findMany({
         where: { tenantId, campaignId: campaign.id },
       });
       const couponIds = couponRows.map((r) => String((r as Record<string, unknown>).id));
@@ -1290,7 +1327,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
       const uniqueUserSet = new Set<string>();
 
       if (couponIds.length > 0) {
-        const reds = await prisma.couponRedemption.findMany({
+        const reds = await delegates.couponRedemption(prisma).findMany({
           where: { tenantId, couponId: { in: couponIds } },
         });
         redeemedCount = reds.length;
@@ -1335,7 +1372,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
       if (!args.id) throw new ValidationError("id is required");
       const now = cfg.now();
       const campaign = await prisma.$transaction(async (tx) => {
-        const row = await tx.campaign.findFirst({
+        const row = await delegates.campaign(tx).findFirst({
           where: { id: args.id, tenantId },
         });
         if (!row) {
@@ -1344,11 +1381,11 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
             couponId: args.id,
           });
         }
-        const updated = await tx.campaign.update({
+        const updated = await delegates.campaign(tx).update({
           where: { id: args.id },
           data: { status: CAMPAIGN_STATUS.CLOSED },
         });
-        await writeAudit(tx, {
+        await writeAudit(delegates.couponAuditLog(tx), {
           tenantId,
           action: AUDIT_ACTION.CAMPAIGN_CLOSED,
           resourceId: args.id,
@@ -1379,7 +1416,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
       if (args.couponId) where.couponId = args.couponId;
       if (args.issuedToUserId) where.issuedToUserId = args.issuedToUserId;
       return paginate(
-        prisma.couponIssuance,
+        delegates.couponIssuance(prisma),
         where,
         limit,
         args.cursor,
@@ -1395,7 +1432,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
       if (args.couponId) where.couponId = args.couponId;
       if (args.redeemedByUserId) where.redeemedByUserId = args.redeemedByUserId;
       return paginate(
-        prisma.couponRedemption,
+        delegates.couponRedemption(prisma),
         where,
         limit,
         args.cursor,
@@ -1412,7 +1449,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
       if (args.resourceId) where.resourceId = args.resourceId;
       if (args.resourceType) where.resourceType = args.resourceType;
       return paginate(
-        prisma.couponAuditLog,
+        delegates.couponAuditLog(prisma),
         where,
         limit,
         args.cursor,

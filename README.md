@@ -17,7 +17,7 @@ pnpm install @prisma/client
 
 Peer dependencies:
 
-- `@prisma/client` >= 5 < 7
+- `@prisma/client` >= 5 < 8
 - `typescript` >= 5 (optional)
 
 Runtime dependencies (bundled): `zod`, `nanoid`, `@paralleldrive/cuid2`.
@@ -94,9 +94,56 @@ npx prisma generate
 npx prisma migrate dev --name add_coupon
 ```
 
-Model names may be renamed if they conflict with your existing schema;
-however the field names, indexes and the `@@unique` constraints must be
-preserved for concurrency and invariants to hold.
+Field names, indexes and the `@@unique` constraints must be preserved for the
+concurrency guarantees and invariants to hold. Model names, on the other hand,
+are yours to change — see below.
+
+### Renaming the models
+
+`Campaign` is a common name, so a consumer schema may already own it. Rename
+any of the five models in your copy of the fragment and tell the client about
+it through `models`:
+
+```prisma
+model CouponCampaign {   // was: Campaign
+  // ...same fields, indexes and constraints
+}
+```
+
+```ts
+const coupon = createCouponClient({
+  prisma,
+  models: { campaign: "couponCampaign" }, // the Prisma delegate name
+});
+```
+
+`models` takes delegate names — what you call on the client
+(`prisma.couponCampaign`), which is the model name with a lowercase first
+letter. Any key you leave out keeps its default (`coupon`, `campaign`,
+`couponIssuance`, `couponRedemption`, `couponAuditLog`).
+
+`redeem()` takes a `SELECT ... FOR UPDATE` row lock on the coupon table, and
+raw SQL needs the physical table name rather than the delegate name. It is
+derived by capitalizing the delegate name, which is Prisma's own default. If
+your schema uses `@@map`, declare the real name:
+
+```prisma
+model Coupon {
+  // ...
+  @@map("coupons")
+}
+```
+
+```ts
+const coupon = createCouponClient({
+  prisma,
+  tables: { coupon: "coupons" },
+});
+```
+
+Both maps accept plain SQL identifiers only (`[A-Za-z_][A-Za-z0-9_]*`); a
+malformed name raises `InvalidModelNameError` when the client is created, and
+a name that matches no delegate raises it on the first call that needs it.
 
 ## Errors
 
@@ -105,6 +152,7 @@ All errors extend `CouponError` and carry a stable string `code`.
 | Class | `code` |
 |---|---|
 | `ValidationError` | `VALIDATION_ERROR` |
+| `InvalidModelNameError` | `INVALID_MODEL_NAME` |
 | `InvalidDiscountPolicyError` | `INVALID_DISCOUNT_POLICY` |
 | `InvalidDateRangeError` | `INVALID_DATE_RANGE` |
 | `CurrencyMismatchError` | `CURRENCY_MISMATCH` |
@@ -191,6 +239,10 @@ never touch tenantId again.
 - `metadata` object is guarded against prototype pollution (`__proto__` /
   `constructor` / `prototype` keys rejected).
 - `issueBulk.count` and `campaigns.issue.count` are capped at 10,000.
+- `models` / `tables` entries are checked against `[A-Za-z_][A-Za-z0-9_]*`
+  before the coupon table name reaches the row-lock query — the only place an
+  identifier is interpolated into SQL. Row values always travel as bound
+  parameters.
 - Cursor pagination defaults to `limit=50`, max `limit=200`. Every list sorts
   by `id` as a secondary key, so rows sharing a `createdAt` (anything issued
   in one `issueBulk` call) still page deterministically — no duplicates and

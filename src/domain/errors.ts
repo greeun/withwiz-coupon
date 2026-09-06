@@ -67,6 +67,20 @@ export class CurrencyMismatchError extends CouponError {
   }
 }
 
+/**
+ * Raised when `config.models` / `config.tables` name something the client
+ * cannot resolve, or when a name is not a plain SQL identifier. This is a
+ * wiring mistake, not an end-user input error: a malformed name is rejected
+ * while the client is being created, and a name that resolves to no delegate
+ * is rejected on the first call that touches it.
+ */
+export class InvalidModelNameError extends CouponError {
+  public static readonly code = "INVALID_MODEL_NAME";
+  constructor(message: string, ctx?: CouponErrorContext) {
+    super(message, InvalidModelNameError.code, ctx);
+  }
+}
+
 // --- Coupon state family ----------------------------------------------------
 
 export class CouponNotFoundError extends CouponError {

@@ -1,6 +1,11 @@
 // ============================================================================
 // @withwiz/coupon — schema fragment
-// Copy-paste into your schema.prisma. Model names may be prefixed if conflict.
+//
+// Copy-paste into your schema.prisma. Model names may be prefixed when they
+// collide with your own schema (`Campaign` is the usual one) — declare the
+// mapping through createCouponClient({ models, tables }). Fields, indexes and
+// @@unique constraints must be kept as they are: the concurrency guarantees
+// depend on them. See "Schema Setup" in README.md.
 // ============================================================================
 
 model Coupon {

@@ -81,17 +81,19 @@ report("V1 (no @/ or ../../src/ imports)", grep(all, V1));
 const V2 = /@withwiz\/toolkit|(?<!@)src\/lib|(?<!@)src\/app|(?<!@)src\/components|(?<!@)src\/types|(?<!@)src\/skins/;
 report("V2 (no @withwiz/toolkit / src/* refs)", grep(all, V2));
 
-// V2a: every prisma.<delegate>.* call should have tenantId within 800 chars
-// We do a coarse approximation: any file that matches prisma delegate calls
+// V2a: every delegate call should have tenantId within 800 chars
+// We do a coarse approximation: any file that matches delegate calls
 // but does NOT contain `tenantId` nearby flags. Use per-line scan for
 // delegate method calls and look for `tenantId` within the next 20 lines.
-const delegateRe = /prisma\.(coupon|campaign|couponIssuance|couponRedemption|couponAuditLog)\.(findFirst|findUnique|findMany|update|updateMany|delete|deleteMany|count|aggregate|create|createMany)\s*\(/;
+const delegateRe = /delegates\.(coupon|campaign|couponIssuance|couponRedemption|couponAuditLog)\((?:prisma|tx)\)\.(findFirst|findUnique|findMany|update|updateMany|delete|deleteMany|count|aggregate|create|createMany)\s*\(/;
 // NB: we only scan SRC (not dist — dist is bundled and loses locality)
 const v2aMisses = [];
+let v2aScanned = 0;
 for (const { path, content } of scanSources) {
   const lines = content.split("\n");
   for (let i = 0; i < lines.length; i++) {
     if (!delegateRe.test(lines[i])) continue;
+    v2aScanned++;
     // gather up to next 30 lines to look for tenantId
     const slice = lines.slice(Math.max(0, i - 2), Math.min(lines.length, i + 30)).join("\n");
     if (!/tenantId/.test(slice) && !/\/\/\s*allow-tenant-scope/.test(lines[i])) {
@@ -100,6 +102,19 @@ for (const { path, content } of scanSources) {
   }
 }
 report("V2a (every prisma delegate call includes tenantId)", v2aMisses);
+
+// V2a would pass vacuously if a refactor renamed the delegate call shape and
+// `delegateRe` stopped matching anything. Require the scan to have seen calls.
+const V2A_MIN_CALLS = 20;
+if (v2aScanned < V2A_MIN_CALLS) {
+  failed++;
+  console.error(
+    `[FAIL] V2a (scan coverage): matched only ${v2aScanned} delegate call(s), ` +
+      `expected >= ${V2A_MIN_CALLS}. delegateRe is likely stale after a refactor.`
+  );
+} else {
+  console.log(`[OK] V2a (scan coverage) ${v2aScanned} delegate call(s) inspected`);
+}
 
 // V2b: forbid imports from @prisma/client in SRC
 const V2b = /import\s+(type\s+)?.*from\s+['"]@prisma\/client['"]/;
@@ -165,6 +180,23 @@ for (const { path, content } of scanSources) {
   }
 }
 report("V2e (AMENDMENT-2 negative: unconditional campaign.update({...issuedCount}))", v2eNegative);
+
+// V2f/V2g (reusability): model names must not be hardcoded outside
+// src/delegates.ts. A consumer whose own schema already owns `Campaign` (the
+// common collision) renames the fragment models and declares the mapping via
+// `config.models`; any delegate reached by its literal name, or any table name
+// written straight into raw SQL, would silently ignore that mapping.
+const outsideResolver = scanSources.filter(
+  (f) => f.path !== "src/delegates.ts" && f.path !== "src\\delegates.ts"
+);
+
+// V2f: literal delegate access such as `prisma.coupon` / `tx.campaign`.
+const V2f = /\b(?:prisma|tx|db|client)\.(?:coupon|campaign|couponIssuance|couponRedemption|couponAuditLog)\b/;
+report("V2f (no literal delegate access outside delegates.ts)", grep(outsideResolver, V2f));
+
+// V2g: fragment table names quoted inside SQL text.
+const V2g = /"(?:Coupon|Campaign|CouponIssuance|CouponRedemption|CouponAuditLog)"/;
+report("V2g (no hardcoded SQL table names outside delegates.ts)", grep(outsideResolver, V2g));
 
 if (failed > 0) {
   console.error(`\n${failed} isolation check(s) failed.`);

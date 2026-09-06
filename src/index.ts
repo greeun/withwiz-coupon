@@ -5,6 +5,10 @@ export type { CouponClient, CouponClientConfig } from "./client.js";
 
 export { calculate as calculateDiscount, validateDiscountPolicy } from "./discount.js";
 
+// --- Model name mapping (for consumers whose schema renames the fragment) ---
+export { DEFAULT_MODEL_NAMES } from "./delegates.js";
+export type { CouponModelKey, ModelNameMap, TableNameMap } from "./delegates.js";
+
 // --- Domain constants / enums / reason union ---
 export {
   COUPON_STATUS,
@@ -60,6 +64,7 @@ export type {
 export {
   CouponError,
   ValidationError,
+  InvalidModelNameError,
   InvalidDiscountPolicyError,
   InvalidDateRangeError,
   CurrencyMismatchError,

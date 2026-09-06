@@ -18,7 +18,8 @@ jobs:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: coupon_test
         ports:
-          - 5442:5432
+          # Matches docker-compose.yml so local and CI share one DATABASE_URL.
+          - 13011:5432
         options: >-
           --health-cmd "pg_isready -U postgres -d coupon_test"
           --health-interval 2s
@@ -26,7 +27,7 @@ jobs:
           --health-retries 20
 
     env:
-      DATABASE_URL: "postgresql://postgres:postgres@localhost:5442/coupon_test?schema=public"
+      DATABASE_URL: "postgresql://postgres:postgres@localhost:13011/coupon_test?schema=public"
 
     steps:
       - uses: actions/checkout@v4
@@ -38,39 +39,31 @@ jobs:
           node-version: 20
           cache: pnpm
           cache-dependency-path: |
-            packages/coupon/pnpm-lock.yaml
-            packages/coupon/examples/consumer/pnpm-lock.yaml
+            pnpm-lock.yaml
+            examples/consumer/pnpm-lock.yaml
 
       - name: Install
-        working-directory: packages/coupon
         run: pnpm install --frozen-lockfile
 
       - name: Prisma generate
-        working-directory: packages/coupon
         run: pnpm run prisma:generate
 
       - name: DB push
-        working-directory: packages/coupon
         run: pnpm run db:push
 
       - name: Typecheck
-        working-directory: packages/coupon
         run: pnpm run typecheck
 
       - name: Isolation check
-        working-directory: packages/coupon
         run: pnpm run check:isolation
 
       - name: Build
-        working-directory: packages/coupon
         run: pnpm run build
 
       - name: Test
-        working-directory: packages/coupon
         run: pnpm run test:coverage
 
       - name: Concurrency x3
-        working-directory: packages/coupon
         run: pnpm run test:concurrency:x3
 
       # The consumer sample is the only asset that proves the package works
@@ -78,23 +71,22 @@ jobs:
       # prisma fragment into it, and redeems inside its own transaction.
       # It consumes dist/, so it must run after Build.
       - name: Consumer sample — install
-        working-directory: packages/coupon/examples/consumer
+        working-directory: examples/consumer
         run: pnpm install --frozen-lockfile
 
       - name: Consumer sample — prisma generate + db push
-        working-directory: packages/coupon/examples/consumer
+        working-directory: examples/consumer
         env:
-          DATABASE_URL: "postgresql://postgres:postgres@localhost:5442/coupon_test?schema=consumer_sample"
+          DATABASE_URL: "postgresql://postgres:postgres@localhost:13011/coupon_test?schema=consumer_sample"
         run: |
           pnpm run prisma:generate
           pnpm run db:push
 
       - name: Consumer sample — smoke test
-        working-directory: packages/coupon/examples/consumer
+        working-directory: examples/consumer
         env:
-          DATABASE_URL: "postgresql://postgres:postgres@localhost:5442/coupon_test?schema=consumer_sample"
+          DATABASE_URL: "postgresql://postgres:postgres@localhost:13011/coupon_test?schema=consumer_sample"
         run: pnpm run test
 
       - name: Pack (dry run)
-        working-directory: packages/coupon
         run: pnpm pack --pack-destination /tmp

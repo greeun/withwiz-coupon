@@ -278,7 +278,7 @@ pnpm install --frozen-lockfile
 pnpm run prisma:generate && pnpm run db:push && pnpm run test
 ```
 
-CI provisions its own Postgres on port 5442, so the workflow sets
+CI provisions its own Postgres on the same port 13011, so the workflow sets
 `DATABASE_URL` itself and does not use `docker-compose.yml`.
 
 ## Non-goals / Future

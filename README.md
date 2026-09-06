@@ -4,8 +4,9 @@ Multi-tenant, concurrency-safe coupon domain core for Prisma + Node.js.
 Drop-in for Next.js / serverless / any Node backend. No UI, no payment glue,
 no emitter side effects — pure coupon lifecycle.
 
-> 본 패키지는 멀티테넌트·동시성 안전 쿠폰 도메인 코어입니다. UI/결제/메일 어떤 것도 결합하지 않고
-> Prisma를 통해 consumer가 이미 가진 DB에 쿠폰 스키마를 병합해 사용합니다.
+> The package owns coupon lifecycle and nothing else. It merges its schema
+> into the database you already have through Prisma, and leaves UI, payment
+> and mail to you.
 
 ## Install
 

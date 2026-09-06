@@ -1,5 +1,6 @@
-# 상위 url-shortener-mvp 가 pnpm 워크스페이스 루트라서, 이 파일이 없으면 pnpm 이 상위로
-# 올라가 url-shortener-mvp 전체를 설치한다. 이 패키지를 독립 루트로 고정하기 위한 파일.
+# Pins this package as its own pnpm workspace root. Without this file, pnpm
+# walks up the directory tree and installs into whatever workspace it finds
+# above — which is what happens when the repo sits inside a larger checkout.
 allowBuilds:
   '@prisma/client': true
   '@prisma/engines': true

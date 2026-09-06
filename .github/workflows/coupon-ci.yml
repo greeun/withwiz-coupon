@@ -37,7 +37,9 @@ jobs:
         with:
           node-version: 20
           cache: pnpm
-          cache-dependency-path: packages/coupon/pnpm-lock.yaml
+          cache-dependency-path: |
+            packages/coupon/pnpm-lock.yaml
+            packages/coupon/examples/consumer/pnpm-lock.yaml
 
       - name: Install
         working-directory: packages/coupon
@@ -70,6 +72,28 @@ jobs:
       - name: Concurrency x3
         working-directory: packages/coupon
         run: pnpm run test:concurrency:x3
+
+      # The consumer sample is the only asset that proves the package works
+      # from OUTSIDE this repo: it owns its own schema, merges the published
+      # prisma fragment into it, and redeems inside its own transaction.
+      # It consumes dist/, so it must run after Build.
+      - name: Consumer sample — install
+        working-directory: packages/coupon/examples/consumer
+        run: pnpm install --frozen-lockfile
+
+      - name: Consumer sample — prisma generate + db push
+        working-directory: packages/coupon/examples/consumer
+        env:
+          DATABASE_URL: "postgresql://postgres:postgres@localhost:5442/coupon_test?schema=consumer_sample"
+        run: |
+          pnpm run prisma:generate
+          pnpm run db:push
+
+      - name: Consumer sample — smoke test
+        working-directory: packages/coupon/examples/consumer
+        env:
+          DATABASE_URL: "postgresql://postgres:postgres@localhost:5442/coupon_test?schema=consumer_sample"
+        run: pnpm run test
 
       - name: Pack (dry run)
         working-directory: packages/coupon

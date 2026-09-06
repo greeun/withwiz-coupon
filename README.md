@@ -191,9 +191,43 @@ never touch tenantId again.
 - `metadata` object is guarded against prototype pollution (`__proto__` /
   `constructor` / `prototype` keys rejected).
 - `issueBulk.count` and `campaigns.issue.count` are capped at 10,000.
-- Cursor pagination defaults to `limit=50`, max `limit=200`.
+- Cursor pagination defaults to `limit=50`, max `limit=200`. Every list sorts
+  by `id` as a secondary key, so rows sharing a `createdAt` (anything issued
+  in one `issueBulk` call) still page deterministically — no duplicates and
+  no dropped rows.
 - No `$executeRawUnsafe` / `$queryRawUnsafe` is used anywhere in this
   package.
+
+## Development
+
+Tests run against a real Postgres — there are no mocks. Start the bundled
+database and point `DATABASE_URL` at it:
+
+```bash
+docker compose up -d          # postgres on host port 13011
+export DATABASE_URL="postgresql://postgres:postgres@localhost:13011/coupon_test?schema=public"
+
+pnpm install --frozen-lockfile
+pnpm run prisma:generate && pnpm run db:push
+pnpm run typecheck && pnpm run check:isolation
+pnpm run build && pnpm run test:coverage
+pnpm run test:concurrency:x3  # reruns the race suite 3x
+```
+
+`examples/consumer` is a standalone app that installs this package by path and
+merges `prisma/fragment.prisma` into its own schema. It uses the same database
+on a separate `consumer_sample` schema and runs in CI, which is what keeps the
+package honest about working outside this repo:
+
+```bash
+cd examples/consumer
+export DATABASE_URL="postgresql://postgres:postgres@localhost:13011/coupon_test?schema=consumer_sample"
+pnpm install --frozen-lockfile
+pnpm run prisma:generate && pnpm run db:push && pnpm run test
+```
+
+CI provisions its own Postgres on port 5442, so the workflow sets
+`DATABASE_URL` itself and does not use `docker-compose.yml`.
 
 ## Non-goals / Future
 

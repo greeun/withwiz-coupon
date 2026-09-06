@@ -4,7 +4,7 @@ import { createCouponClient, CouponExhaustedError } from "@withwiz/coupon";
 
 const DATABASE_URL =
   process.env.DATABASE_URL ??
-  "postgresql://postgres:postgres@localhost:5442/coupon_test?schema=consumer_sample";
+  "postgresql://postgres:postgres@localhost:13011/coupon_test?schema=consumer_sample";
 
 process.env.DATABASE_URL = DATABASE_URL;
 

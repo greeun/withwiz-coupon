@@ -1,4 +1,5 @@
 {
+  "packageManager": "pnpm@11.10.0",
   "name": "@withwiz/coupon",
   "version": "0.1.0",
   "description": "Multi-tenant, concurrency-safe coupon domain core for Prisma + Node.js applications",
@@ -37,7 +38,7 @@
     "check:isolation": "node scripts/check-isolation.mjs",
     "prisma:generate": "prisma generate --schema=prisma/schema.prisma",
     "db:push": "prisma db push --schema=prisma/schema.prisma --skip-generate --accept-data-loss",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
     "zod": "^3.23.0",

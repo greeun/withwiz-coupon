@@ -74,6 +74,41 @@ describe("T-1 basic CRUD + pagination + idGenerator override", () => {
     await truncateTenant(prisma, t);
   });
 
+  it("cursor pagination drops/duplicates nothing when the sort key ties", async () => {
+    const t = freshTenantId("t1c");
+    const client = createCouponClient({
+      prisma: asPrismaLike(prisma),
+      defaultTenantId: t,
+    });
+    await client.coupons.issueBulk({
+      count: 25,
+      codeLength: 8,
+      discount: { kind: "FIXED", amount: 1000, currency: "KRW" },
+    });
+    // issueBulk already produces createdAt ties, but only lands one on the
+    // page boundary by chance. Collapse every row onto a single timestamp so
+    // the boundary tie is guaranteed and the assertion is deterministic.
+    await prisma.coupon.updateMany({
+      where: { tenantId: t },
+      data: { createdAt: new Date("2026-01-01T00:00:00.000Z") },
+    });
+
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < 5; page++) {
+      const res: Awaited<ReturnType<typeof client.coupons.list>> =
+        await client.coupons.list(
+          cursor === null ? { limit: 10 } : { limit: 10, cursor }
+        );
+      seen.push(...res.items.map((c) => c.id));
+      if (res.nextCursor === null) break;
+      cursor = res.nextCursor;
+    }
+    expect(seen.length).toBe(25); // nothing dropped
+    expect(new Set(seen).size).toBe(25); // nothing duplicated
+    await truncateTenant(prisma, t);
+  });
+
   it("pagination limit > max (200) throws ValidationError [K]", async () => {
     const client = createCouponClient({
       prisma: asPrismaLike(prisma),

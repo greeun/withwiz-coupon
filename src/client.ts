@@ -274,6 +274,29 @@ export interface CouponClient {
 // Implementation
 // ---------------------------------------------------------------------------
 
+/**
+ * Append `id` to an orderBy so the sort is a total order.
+ *
+ * Cursor pagination positions itself by locating the cursor row inside the
+ * ordered result. A single timestamp key (`createdAt` / `issuedAt` /
+ * `redeemedAt`) is NOT unique — rows written inside one transaction
+ * (`issueBulk`, `campaigns.issue`) routinely share a millisecond. Postgres may
+ * then return tied rows in a different order per query, so `cursor` + `skip: 1`
+ * silently duplicates rows across pages or drops them entirely. The `id`
+ * tie-breaker makes the ordering deterministic and the cursor stable.
+ *
+ * The tie-breaker inherits the direction of the leading key, so a `desc` list
+ * stays fully descending. An orderBy that already sorts by `id` is left alone.
+ */
+function withIdTieBreak(
+  orderBy: Record<string, unknown>
+): Record<string, unknown>[] {
+  if ("id" in orderBy) return [orderBy];
+  const leading = Object.values(orderBy)[0];
+  const direction = leading === "asc" ? "asc" : "desc";
+  return [orderBy, { id: direction }];
+}
+
 export function createCouponClient(config: CouponClientConfig): CouponClient {
   const cfg = resolveConfig(config);
   const prisma = cfg.prisma;
@@ -291,7 +314,11 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
     orderBy: Record<string, unknown> = { createdAt: "desc" }
   ): Promise<Paged<TOut>> {
     const take = limit + 1;
-    const findArgs: Record<string, unknown> = { where, take, orderBy };
+    const findArgs: Record<string, unknown> = {
+      where,
+      take,
+      orderBy: withIdTieBreak(orderBy),
+    };
     if (cursor) {
       findArgs.cursor = { id: cursor };
       findArgs.skip = 1;

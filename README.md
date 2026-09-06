@@ -10,9 +10,9 @@ no emitter side effects — pure coupon lifecycle.
 ## Install
 
 ```bash
-npm install @withwiz/coupon
+pnpm install @withwiz/coupon
 # peer deps
-npm install @prisma/client
+pnpm install @prisma/client
 ```
 
 Peer dependencies:

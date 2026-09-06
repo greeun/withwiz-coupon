@@ -1,0 +1,7 @@
+# 상위 url-shortener-mvp 가 pnpm 워크스페이스 루트라서, 이 파일이 없으면 pnpm 이 상위로
+# 올라가 url-shortener-mvp 전체를 설치한다. 이 패키지를 독립 루트로 고정하기 위한 파일.
+allowBuilds:
+  '@prisma/client': true
+  '@prisma/engines': true
+  esbuild: true
+  prisma: true

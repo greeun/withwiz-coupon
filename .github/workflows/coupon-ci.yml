@@ -31,44 +31,46 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
-          cache-dependency-path: packages/coupon/package-lock.json
+          cache: pnpm
+          cache-dependency-path: packages/coupon/pnpm-lock.yaml
 
       - name: Install
         working-directory: packages/coupon
-        run: npm install
+        run: pnpm install --frozen-lockfile
 
       - name: Prisma generate
         working-directory: packages/coupon
-        run: npm run prisma:generate
+        run: pnpm run prisma:generate
 
       - name: DB push
         working-directory: packages/coupon
-        run: npm run db:push
+        run: pnpm run db:push
 
       - name: Typecheck
         working-directory: packages/coupon
-        run: npm run typecheck
+        run: pnpm run typecheck
 
       - name: Isolation check
         working-directory: packages/coupon
-        run: npm run check:isolation
+        run: pnpm run check:isolation
 
       - name: Build
         working-directory: packages/coupon
-        run: npm run build
+        run: pnpm run build
 
       - name: Test
         working-directory: packages/coupon
-        run: npm run test:coverage
+        run: pnpm run test:coverage
 
       - name: Concurrency x3
         working-directory: packages/coupon
-        run: npm run test:concurrency:x3
+        run: pnpm run test:concurrency:x3
 
       - name: Pack (dry run)
         working-directory: packages/coupon
-        run: npm pack --dry-run
+        run: pnpm pack --pack-destination /tmp

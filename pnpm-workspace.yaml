@@ -6,3 +6,12 @@ allowBuilds:
   '@prisma/engines': true
   esbuild: true
   prisma: true
+
+# Security overrides for dev-only transitive dependencies whose parents still
+# request a vulnerable range (see `pnpm audit`):
+#   - esbuild      < 0.28.1 via tsup      (GHSA-g7r4-m6w7-qqqr, low)
+#   - deepmerge-ts < 8.0.0  via prisma 6  (stack exhaustion, high)
+# Neither package ships in dist/. Drop an override once its parent moves on.
+overrides:
+  esbuild: '>=0.28.1'
+  deepmerge-ts: '>=8.0.0'

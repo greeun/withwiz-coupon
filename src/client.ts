@@ -83,7 +83,9 @@ import type { DelegateResolver, ModelNameMap, TableNameMap } from "./delegates.j
 import {
   assertEligibility,
   assertMetadata,
+  assertOptionalString,
   assertPaginationLimit,
+  assertRequiredString,
   canonicalizeCode,
   resolveTenantId,
   sanitizeCode,
@@ -130,6 +132,21 @@ export type CouponClientConfig = {
  */
 function w<T>(v: T): Record<string, unknown> {
   return v as unknown as Record<string, unknown>;  // allow-any: single-point Prisma write coercion
+}
+
+/**
+ * Prisma reports a unique-constraint violation as a `PrismaClientKnownRequestError`
+ * with `code === "P2002"`. We detect it structurally (no `@prisma/client`
+ * import) so that ONLY a genuine uniqueness conflict is translated into a
+ * domain error; connection loss, aborted transactions, column-length errors
+ * and the like keep their original shape and reach the caller unchanged.
+ */
+function isUniqueViolation(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err as { code?: unknown }).code === "P2002"
+  );
 }
 
 const NOOP_LOGGER: CouponLogger = {
@@ -184,6 +201,20 @@ async function safeEmit(
       event: event.type,
       error: error instanceof Error ? error.message : String(error),
     });
+  }
+}
+
+/**
+ * [M] A coupon with `maxRedemptionsPerUser` set cannot be validated or
+ * redeemed anonymously; otherwise omitting `userId` would silently bypass
+ * the cap (and, because the idempotency index treats NULL as distinct, the
+ * duplicate-order guard as well).
+ */
+function assertUserIdForPerUserLimit(userId: string | null | undefined): asserts userId is string {
+  if (typeof userId !== "string" || userId.length === 0) {
+    throw new ValidationError(
+      "userId is required: this coupon enforces maxRedemptionsPerUser"
+    );
   }
 }
 
@@ -388,22 +419,28 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
         const created = await delegates.coupon(tx).create({ data: row });
         return rowToCoupon(created as Record<string, unknown>);
       } catch (err) {
+        // Anything other than a uniqueness conflict is not ours to reinterpret.
+        if (!isUniqueViolation(err)) throw err;
         lastError = err;
         if (baseCode) {
-          // unique conflict on user-supplied code — fatal.
+          // Unique conflict on a user-supplied code is fatal. The original
+          // Prisma error travels as `cause` (never in `details`, which a
+          // consumer may surface to end users) so it cannot leak schema names.
           throw new ValidationError(
             `coupon code already exists in tenant`,
-            { prismaError: err instanceof Error ? err.message : String(err) },
-            { tenantId, couponCode: baseCode }
+            undefined,
+            { tenantId, couponCode: baseCode, cause: err }
           );
         }
-        // retry with regenerated code
+        // Retry with a regenerated code. NB: on Postgres a failed INSERT
+        // aborts the surrounding transaction, so a retry only helps when
+        // maxAttempts === 1 is not in effect — `coupons.create` always passes 1.
       }
     }
     throw new ValidationError(
       `failed to create coupon after ${maxAttempts} attempts (unique code collision)`,
-      { lastError: lastError instanceof Error ? lastError.message : String(lastError) },
-      { tenantId }
+      undefined,
+      { tenantId, cause: lastError }
     );
   }
 
@@ -522,16 +559,35 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
 
       // We need unique codes across the batch. Generate with retries per row
       // within a single outer transaction.
+      //
+      // A collision is detected with a SELECT *before* the INSERT rather than
+      // by catching the unique-violation error: on Postgres a failed statement
+      // aborts the whole transaction, so "catch and retry" would make every
+      // later INSERT (and the audit row) fail too. The pre-check keeps the
+      // transaction healthy; the INSERT itself is still guarded by the
+      // (tenantId, code) unique index for the rare concurrent race.
       await prisma.$transaction(async (tx) => {
+        const seen = new Set<string>();
         for (let i = 0; i < input.count; i++) {
           let placed: Coupon | null = null;
           for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             totalAttempts++;
-            const code = cfg.codeGenerator({ length: codeLength });
+            const canonical = canonicalizeCode(
+              cfg.codeGenerator({ length: codeLength })
+            );
+            const collided =
+              seen.has(canonical) ||
+              (await delegates.coupon(tx).findFirst({
+                where: { tenantId, code: canonical },
+                select: { id: true },
+              })) !== null;
+            if (collided) {
+              if (attempt === maxAttempts) skipped++;
+              continue;
+            }
+            let row: Record<string, unknown>;
             try {
-              sanitizeCode(code);
-              const canonical = canonicalizeCode(code);
-              const row = await delegates.coupon(tx).create({
+              row = (await delegates.coupon(tx).create({
                 data: {
                   id: cfg.idGenerator(),
                   tenantId,
@@ -546,15 +602,21 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
                   eligibility: w(eligibility),
                   metadata: w((metadata ?? null)),
                 },
-              });
-              placed = rowToCoupon(row as Record<string, unknown>);
-              break;
+              })) as Record<string, unknown>;
             } catch (err) {
-              // likely P2002 unique violation — retry with a new code
-              if (attempt === maxAttempts) {
-                skipped++;
-              }
+              if (!isUniqueViolation(err)) throw err;
+              // A concurrent writer took this code between our SELECT and
+              // INSERT. The transaction is aborted at this point, so surface
+              // it as a domain error instead of pretending to retry.
+              throw new ValidationError(
+                "bulk issuance aborted: coupon code collided with a concurrent insert",
+                undefined,
+                { tenantId, couponCode: canonical, cause: err }
+              );
             }
+            seen.add(canonical);
+            placed = rowToCoupon(row);
+            break;
           }
           if (placed) {
             created.push(placed);
@@ -679,9 +741,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
 
     async get(args) {
       const tenantId = tid(args.tenantId);
-      if (!args.id || typeof args.id !== "string") {
-        throw new ValidationError("id is required");
-      }
+      assertRequiredString("id", args.id, LIMITS.ID_MAX_LENGTH);
       const row = await delegates.coupon(prisma).findFirst({
         where: { id: args.id, tenantId },
       });
@@ -691,6 +751,8 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
     async list(args) {
       const tenantId = tid(args.tenantId);
       const limit = assertPaginationLimit(args.limit);
+      assertOptionalString("cursor", args.cursor, LIMITS.ID_MAX_LENGTH);
+      assertOptionalString("campaignId", args.campaignId, LIMITS.ID_MAX_LENGTH);
       const where: Record<string, unknown> = { tenantId };
       if (args.campaignId) where.campaignId = args.campaignId;
       if (args.status) where.status = args.status;
@@ -706,6 +768,8 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
 
     async pause(args) {
       const tenantId = tid(args.tenantId);
+      assertRequiredString("id", args.id, LIMITS.ID_MAX_LENGTH);
+      assertOptionalString("actorId", args.actorId, LIMITS.USER_ID_MAX_LENGTH);
       const now = cfg.now();
       const coupon = await prisma.$transaction(async (tx) => {
         const row = await delegates.coupon(tx).findFirst({
@@ -740,6 +804,8 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
 
     async resume(args) {
       const tenantId = tid(args.tenantId);
+      assertRequiredString("id", args.id, LIMITS.ID_MAX_LENGTH);
+      assertOptionalString("actorId", args.actorId, LIMITS.USER_ID_MAX_LENGTH);
       const now = cfg.now();
       const coupon = await prisma.$transaction(async (tx) => {
         const row = await delegates.coupon(tx).findFirst({
@@ -774,6 +840,8 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
 
     async archive(args) {
       const tenantId = tid(args.tenantId);
+      assertRequiredString("id", args.id, LIMITS.ID_MAX_LENGTH);
+      assertOptionalString("actorId", args.actorId, LIMITS.USER_ID_MAX_LENGTH);
       const now = cfg.now();
       const coupon = await prisma.$transaction(async (tx) => {
         const row = await delegates.coupon(tx).findFirst({
@@ -842,8 +910,10 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
         return { ok: false, reason: elig.reason };
       }
 
-      // Per-user limit pre-check (non-destructive)
-      if (coupon.maxRedemptionsPerUser !== null && input.userId) {
+      // Per-user limit pre-check (non-destructive). A per-user cap is
+      // meaningless without a user, so the caller must identify one.
+      if (coupon.maxRedemptionsPerUser !== null) {
+        assertUserIdForPerUserLimit(input.userId);
         const count = await delegates.couponRedemption(tx).count({
           where: {
             tenantId,
@@ -959,8 +1029,12 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
       throw eligibilityReasonToError(elig.reason);
     }
 
-    // Per-user limit pre-check (non-atomic; post-commit re-check below enforces it atomically)
-    if (coupon.maxRedemptionsPerUser !== null && input.userId) {
+    // Per-user limit pre-check (non-atomic; post-insert re-check below
+    // enforces it atomically). [M] The cap cannot be bypassed by omitting
+    // userId: a coupon that carries maxRedemptionsPerUser refuses anonymous
+    // redemption outright.
+    if (coupon.maxRedemptionsPerUser !== null) {
+      assertUserIdForPerUserLimit(input.userId);
       const userCount = await delegates.couponRedemption(tx).count({
         where: {
           tenantId,
@@ -1056,6 +1130,10 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
       });
       redemption = rowToRedemption(inserted as Record<string, unknown>);
     } catch (err) {
+      // Only the (couponId, userId, orderRef) unique conflict means "already
+      // redeemed". Any other failure (connection loss, aborted tx, ...) must
+      // not be recorded under that reason in the rejection audit log.
+      if (!isUniqueViolation(err)) throw err;
       throw new CouponAlreadyRedeemedError(undefined, {
         tenantId,
         couponId: coupon.id,
@@ -1067,7 +1145,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
     // After INSERT succeeded, enforce per-user limit atomically within this
     // transaction: COUNT rows with same (couponId, userId) including the one
     // we just inserted. If above the cap, throw — Prisma rolls back.
-    if (coupon.maxRedemptionsPerUser !== null && input.userId) {
+    if (coupon.maxRedemptionsPerUser !== null) {
       const userCountFinal = await delegates.couponRedemption(tx).count({
         where: {
           tenantId,
@@ -1189,21 +1267,33 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
       const now = cfg.now();
 
       const campaign = await prisma.$transaction(async (tx) => {
-        const row = await delegates.campaign(tx).create({
-          data: {
-            id: cfg.idGenerator(),
-            tenantId,
-            name: input.name,
-            status: CAMPAIGN_STATUS.ACTIVE,
-            discount: w(input.discount),
-            eligibility: w(eligibility),
-            startsAt: input.startsAt ?? null,
-            endsAt: input.endsAt ?? null,
-            maxCoupons: input.maxCoupons ?? null,
-            metadata: w((metadata ?? null)),
-          },
-        });
-        const campaign = rowToCampaign(row as Record<string, unknown>);
+        let row: Record<string, unknown>;
+        try {
+          row = (await delegates.campaign(tx).create({
+            data: {
+              id: cfg.idGenerator(),
+              tenantId,
+              name: input.name,
+              status: CAMPAIGN_STATUS.ACTIVE,
+              discount: w(input.discount),
+              eligibility: w(eligibility),
+              startsAt: input.startsAt ?? null,
+              endsAt: input.endsAt ?? null,
+              maxCoupons: input.maxCoupons ?? null,
+              metadata: w((metadata ?? null)),
+            },
+          })) as Record<string, unknown>;
+        } catch (err) {
+          // (tenantId, name) is unique; report it as a domain error instead
+          // of leaking the raw Prisma message.
+          if (!isUniqueViolation(err)) throw err;
+          throw new ValidationError(
+            "campaign name already exists in tenant",
+            undefined,
+            { tenantId, cause: err }
+          );
+        }
+        const campaign = rowToCampaign(row);
         await writeAudit(delegates.couponAuditLog(tx), {
           tenantId,
           action: AUDIT_ACTION.CAMPAIGN_CREATED,
@@ -1226,7 +1316,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
 
     async get(args) {
       const tenantId = tid(args.tenantId);
-      if (!args.id) throw new ValidationError("id is required");
+      assertRequiredString("id", args.id, LIMITS.ID_MAX_LENGTH);
       const row = await delegates.campaign(prisma).findFirst({
         where: { id: args.id, tenantId },
       });
@@ -1236,6 +1326,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
     async list(args) {
       const tenantId = tid(args.tenantId);
       const limit = assertPaginationLimit(args.limit);
+      assertOptionalString("cursor", args.cursor, LIMITS.ID_MAX_LENGTH);
       const where: Record<string, unknown> = { tenantId };
       if (args.status) where.status = args.status;
       return paginate(
@@ -1250,9 +1341,8 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
 
     async issue(args) {
       if (!args || typeof args !== "object") throw new ValidationError("args required");
-      if (typeof args.campaignId !== "string" || !args.campaignId) {
-        throw new ValidationError("campaignId is required");
-      }
+      assertRequiredString("campaignId", args.campaignId, LIMITS.ID_MAX_LENGTH);
+      assertOptionalString("actorId", args.actorId, LIMITS.USER_ID_MAX_LENGTH);
       if (
         typeof args.count !== "number" ||
         !Number.isInteger(args.count) ||
@@ -1303,7 +1393,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
 
     async summary(args) {
       const tenantId = tid(args.tenantId);
-      if (!args.id) throw new ValidationError("id is required");
+      assertRequiredString("id", args.id, LIMITS.ID_MAX_LENGTH);
       const campRow = await delegates.campaign(prisma).findFirst({
         where: { id: args.id, tenantId },
       });
@@ -1369,7 +1459,8 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
 
     async close(args) {
       const tenantId = tid(args.tenantId);
-      if (!args.id) throw new ValidationError("id is required");
+      assertRequiredString("id", args.id, LIMITS.ID_MAX_LENGTH);
+      assertOptionalString("actorId", args.actorId, LIMITS.USER_ID_MAX_LENGTH);
       const now = cfg.now();
       const campaign = await prisma.$transaction(async (tx) => {
         const row = await delegates.campaign(tx).findFirst({
@@ -1412,6 +1503,9 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
     async listIssuances(args) {
       const tenantId = tid(args.tenantId);
       const limit = assertPaginationLimit(args.limit);
+      assertOptionalString("cursor", args.cursor, LIMITS.ID_MAX_LENGTH);
+      assertOptionalString("couponId", args.couponId, LIMITS.ID_MAX_LENGTH);
+      assertOptionalString("issuedToUserId", args.issuedToUserId, LIMITS.USER_ID_MAX_LENGTH);
       const where: Record<string, unknown> = { tenantId };
       if (args.couponId) where.couponId = args.couponId;
       if (args.issuedToUserId) where.issuedToUserId = args.issuedToUserId;
@@ -1428,6 +1522,9 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
     async listRedemptions(args) {
       const tenantId = tid(args.tenantId);
       const limit = assertPaginationLimit(args.limit);
+      assertOptionalString("cursor", args.cursor, LIMITS.ID_MAX_LENGTH);
+      assertOptionalString("couponId", args.couponId, LIMITS.ID_MAX_LENGTH);
+      assertOptionalString("redeemedByUserId", args.redeemedByUserId, LIMITS.USER_ID_MAX_LENGTH);
       const where: Record<string, unknown> = { tenantId };
       if (args.couponId) where.couponId = args.couponId;
       if (args.redeemedByUserId) where.redeemedByUserId = args.redeemedByUserId;
@@ -1444,6 +1541,8 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
     async listLogs(args) {
       const tenantId = tid(args.tenantId);
       const limit = assertPaginationLimit(args.limit);
+      assertOptionalString("cursor", args.cursor, LIMITS.ID_MAX_LENGTH);
+      assertOptionalString("resourceId", args.resourceId, LIMITS.ID_MAX_LENGTH);
       const where: Record<string, unknown> = { tenantId };
       if (args.action) where.action = args.action;
       if (args.resourceId) where.resourceId = args.resourceId;

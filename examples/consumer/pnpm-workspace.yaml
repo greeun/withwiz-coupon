@@ -7,3 +7,8 @@ allowBuilds:
   '@prisma/engines': true
   esbuild: true
   prisma: true
+
+# Mirrors the package root: prisma 6 still requests deepmerge-ts < 8, which
+# has a known stack-exhaustion advisory. Dev-only; drop with prisma 7.
+overrides:
+  deepmerge-ts: '>=8.0.0'

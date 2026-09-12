@@ -77,6 +77,22 @@ export const LIMITS = {
   PAGINATION_MAX_LIMIT: 200,
   NAME_MAX_LENGTH: 200,
   CURRENCY_LENGTH: 3,
+  /**
+   * [L] Caller-supplied identifier caps. Ids (coupon / campaign / cursor) are
+   * bounded by the audit log's `resourceId VarChar(64)`; `orderRef` by the
+   * redemption table's `VarChar(128)`. User / actor ids share the same bound
+   * so an unbounded string can never reach a Json or text column unchecked.
+   */
+  ID_MAX_LENGTH: 64,
+  USER_ID_MAX_LENGTH: 128,
+  ORDER_REF_MAX_LENGTH: 128,
+  /** [L] Upper bound on serialized `metadata` (bytes of JSON text). */
+  METADATA_MAX_BYTES: 16_384,
+  /** [L] Per-list entry cap and per-entry length cap for eligibility rules. */
+  ELIGIBILITY_MAX_ENTRIES: 1_000,
+  ELIGIBILITY_ENTRY_MAX_LENGTH: 128,
+  /** [L] Length cap for `context.plan / productId / categoryId`. */
+  CONTEXT_VALUE_MAX_LENGTH: 128,
 } as const;
 
 /**

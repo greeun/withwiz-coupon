@@ -250,6 +250,28 @@ never touch tenantId again.
   no dropped rows.
 - No `$executeRawUnsafe` / `$queryRawUnsafe` is used anywhere in this
   package.
+- **`userId` must come from your authenticated session, never from the
+  request body.** Eligibility (`allowedUserIds`), `maxRedemptionsPerUser` and
+  the duplicate-order guard all key on it. A coupon that sets
+  `maxRedemptionsPerUser` refuses anonymous `validate()` / `redeem()` calls
+  with `ValidationError`, so the cap cannot be bypassed by omitting the user.
+- The idempotency index is `(couponId, redeemedByUserId, orderRef)`. Postgres
+  treats `NULL` as distinct, so **pass `orderRef` on every redeem** if you
+  need double-submit protection; without it, a coupon that has no
+  `maxRedemptionsPerUser` can be redeemed repeatedly by the same user.
+- Caller-supplied strings are bounded: ids and cursors 64 chars, user / actor
+  ids and `orderRef` 128 chars, `metadata` 16 KiB of JSON, eligibility lists
+  1,000 entries of 128 chars. Oversized input throws `ValidationError`
+  before it reaches the database.
+- Only a genuine unique-constraint conflict (Prisma `P2002`) is translated
+  into `CouponAlreadyRedeemedError` / "code already exists". Any other
+  database failure propagates unchanged, so the rejection audit log never
+  records a connection error as `ALREADY_REDEEMED`. The original Prisma
+  error is attached as `error.cause`, never placed in `error.details`.
+- Generated codes use a cryptographic RNG (`nanoid`) over a 31-character
+  alphabet. The default length of 8 gives roughly 2^40 combinations, which is
+  adequate **only behind rate limiting** on your `validate` / `redeem`
+  endpoints; raise `codeLength` for high-value or long-lived coupons.
 
 ## Development
 

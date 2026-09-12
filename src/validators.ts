@@ -5,6 +5,7 @@
 
 import { z } from "zod";
 import {
+  COUPON_STATUS,
   FORBIDDEN_METADATA_KEYS,
   LIMITS,
 } from "./domain/constants.js";
@@ -21,12 +22,66 @@ import type {
   IssueBulkInput,
   IssueCouponInput,
   RedeemInput,
+  ValidateContext,
   ValidateInput,
 } from "./domain/types.js";
 
 // ---------------------------------------------------------------------------
 // Primitive guards
 // ---------------------------------------------------------------------------
+
+/**
+ * [L] Bounded string guard for caller-supplied identifiers (userId, orderRef,
+ * actorId, couponId, ...). `null` / `undefined` pass through untouched so
+ * optional fields keep their "absent" semantics; anything else must be a
+ * non-empty string no longer than `max`.
+ */
+export function assertOptionalString(
+  name: string,
+  value: unknown,
+  max: number
+): void {
+  if (value === undefined || value === null) return;
+  if (typeof value !== "string" || value.length === 0) {
+    throw new ValidationError(`${name} must be a non-empty string`);
+  }
+  if (value.length > max) {
+    throw new ValidationError(`${name} length exceeds max (${max})`);
+  }
+}
+
+/** Same as {@link assertOptionalString} but the value is mandatory. */
+export function assertRequiredString(
+  name: string,
+  value: unknown,
+  max: number
+): asserts value is string {
+  if (value === undefined || value === null) {
+    throw new ValidationError(`${name} is required`);
+  }
+  assertOptionalString(name, value, max);
+}
+
+export function assertContext(context: unknown): void {
+  if (context === undefined || context === null) return;
+  if (typeof context !== "object" || Array.isArray(context)) {
+    throw new ValidationError("context must be a plain object");
+  }
+  const c = context as ValidateContext;
+  assertOptionalString("context.plan", c.plan, LIMITS.CONTEXT_VALUE_MAX_LENGTH);
+  assertOptionalString("context.productId", c.productId, LIMITS.CONTEXT_VALUE_MAX_LENGTH);
+  assertOptionalString("context.categoryId", c.categoryId, LIMITS.CONTEXT_VALUE_MAX_LENGTH);
+}
+
+export function assertCouponStatus(status: unknown): void {
+  if (status === undefined) return;
+  const allowed = Object.values(COUPON_STATUS) as string[];
+  if (typeof status !== "string" || !allowed.includes(status)) {
+    throw new ValidationError(
+      `status must be one of ${allowed.join(", ")}`
+    );
+  }
+}
 
 export function assertTenantId(value: unknown): asserts value is string {
   if (typeof value !== "string" || value.length === 0) {
@@ -105,6 +160,21 @@ export function assertMetadata(
       );
     }
   }
+  // [L] Size cap. The serialized form is what lands in the Json column, so
+  // measure that rather than key count. JSON.stringify also rejects cycles
+  // and BigInt, both of which Prisma would refuse later with a less useful
+  // error.
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(rec);
+  } catch {
+    throw new ValidationError("metadata must be JSON-serializable");
+  }
+  if (Buffer.byteLength(serialized, "utf8") > LIMITS.METADATA_MAX_BYTES) {
+    throw new ValidationError(
+      `metadata exceeds max size (${LIMITS.METADATA_MAX_BYTES} bytes)`
+    );
+  }
   return rec;
 }
 
@@ -171,6 +241,18 @@ export function assertEligibility(rules: unknown): EligibilityRules {
         `eligibility.${key} must be an array of non-empty strings`
       );
     }
+    // [L] Bound both the list and each entry so a whitelist cannot be used
+    // to inflate the Json column.
+    if (v.length > LIMITS.ELIGIBILITY_MAX_ENTRIES) {
+      throw new ValidationError(
+        `eligibility.${key} exceeds max entries (${LIMITS.ELIGIBILITY_MAX_ENTRIES})`
+      );
+    }
+    if (v.some((x) => (x as string).length > LIMITS.ELIGIBILITY_ENTRY_MAX_LENGTH)) {
+      throw new ValidationError(
+        `eligibility.${key} entry exceeds max length (${LIMITS.ELIGIBILITY_ENTRY_MAX_LENGTH})`
+      );
+    }
     out[key] = v as string[];
   }
   return out;
@@ -196,6 +278,9 @@ export function validateCreateCouponInput(input: CreateCouponInput): void {
   validateDiscountPolicy(input.discount as DiscountPolicy);
   assertDateRange(input.startsAt ?? null, input.endsAt ?? null);
   assertMetadata(input.metadata);
+  assertCouponStatus(input.status);
+  assertOptionalString("campaignId", input.campaignId, LIMITS.ID_MAX_LENGTH);
+  assertOptionalString("actorId", input.actorId, LIMITS.USER_ID_MAX_LENGTH);
   if (input.maxRedemptions !== undefined && input.maxRedemptions !== null) {
     if (
       typeof input.maxRedemptions !== "number" ||
@@ -249,15 +334,17 @@ export function validateIssueBulkInput(input: IssueBulkInput): void {
   validateDiscountPolicy(input.discount as DiscountPolicy);
   assertDateRange(input.startsAt ?? null, input.endsAt ?? null);
   assertMetadata(input.metadata);
+  assertOptionalString("campaignId", input.campaignId, LIMITS.ID_MAX_LENGTH);
+  assertOptionalString("actorId", input.actorId, LIMITS.USER_ID_MAX_LENGTH);
 }
 
 export function validateIssueCouponInput(input: IssueCouponInput): void {
   if (!input || typeof input !== "object") {
     throw new ValidationError("input must be an object");
   }
-  if (typeof input.couponId !== "string" || input.couponId.length === 0) {
-    throw new ValidationError("couponId is required");
-  }
+  assertRequiredString("couponId", input.couponId, LIMITS.ID_MAX_LENGTH);
+  assertOptionalString("issuedToUserId", input.issuedToUserId, LIMITS.USER_ID_MAX_LENGTH);
+  assertOptionalString("issuedBy", input.issuedBy, LIMITS.USER_ID_MAX_LENGTH);
   assertMetadata(input.metadata);
 }
 
@@ -268,6 +355,8 @@ export function validateValidateInput(input: ValidateInput): void {
   if (typeof input.code !== "string" || input.code.length === 0) {
     throw new ValidationError("code is required");
   }
+  assertOptionalString("userId", input.userId, LIMITS.USER_ID_MAX_LENGTH);
+  assertContext(input.context);
   if (input.subtotal !== undefined) {
     if (
       typeof input.subtotal !== "number" ||
@@ -297,6 +386,9 @@ export function validateRedeemInput(input: RedeemInput): void {
     throw new ValidationError("subtotal must be a non-negative integer");
   }
   assertCurrency(input.currency);
+  assertOptionalString("userId", input.userId, LIMITS.USER_ID_MAX_LENGTH);
+  assertOptionalString("orderRef", input.orderRef, LIMITS.ORDER_REF_MAX_LENGTH);
+  assertContext(input.context);
   assertMetadata(input.metadata);
 }
 
@@ -315,6 +407,7 @@ export function validateCreateCampaignInput(input: CreateCampaignInput): void {
   validateDiscountPolicy(input.discount as DiscountPolicy);
   assertDateRange(input.startsAt ?? null, input.endsAt ?? null);
   assertMetadata(input.metadata);
+  assertOptionalString("actorId", input.actorId, LIMITS.USER_ID_MAX_LENGTH);
   if (input.maxCoupons !== undefined && input.maxCoupons !== null) {
     if (
       typeof input.maxCoupons !== "number" ||

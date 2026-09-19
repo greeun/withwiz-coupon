@@ -12,3 +12,17 @@ coverage
 .claude/
 .axt-profile.json
 .axt-profile.json.bak
+
+# claude code (지침 문서 · 로컬 설정 · 세션 워크트리 · 자동 설치 스킬 · MCP 설정)
+CLAUDE.md
+.claude.json
+.claude.json.*
+.claude-*.json
+
+# axt 로컬 프로파일 (백업본 포함)
+.axt/
+.axt*
+
+# ast (agent session tracker) 로컬 산출물
+.ast/
+.ast*

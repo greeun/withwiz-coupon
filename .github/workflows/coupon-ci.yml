@@ -42,7 +42,11 @@ jobs:
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 20
+          # pnpm 11 (the version packageManager pins) imports node:sqlite, which
+          # arrived in Node 22.5 — on Node 20 pnpm cannot even start. 20 reached
+          # end of life on 2026-04-30 anyway, and 24 is what release.yml
+          # publishes with.
+          node-version: 24
           cache: pnpm
           cache-dependency-path: |
             pnpm-lock.yaml

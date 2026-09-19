@@ -1,0 +1,93 @@
+name: Release to npm
+
+# Publishes via npm Trusted Publishing (OIDC). No NPM_TOKEN secret is involved:
+# npm verifies this workflow's GitHub identity directly, so nothing long-lived
+# has to be stored or rotated. The trusted publisher registered on npmjs.com
+# pins this exact filename — renaming this file breaks publishing.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # required to mint the OIDC token
+
+jobs:
+  publish:
+    name: Publish
+    runs-on: ubuntu-latest
+
+    # The suite talks to a real Postgres, so the publish job brings up the same
+    # service coupon-ci.yml uses. Without it the tests cannot gate the release.
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: coupon_test
+        ports:
+          # Matches docker-compose.yml so local and CI share one DATABASE_URL.
+          - 13011:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d coupon_test"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      DATABASE_URL: "postgresql://postgres:postgres@localhost:13011/coupon_test?schema=public"
+
+    steps:
+      # Actions are pinned to full commit SHAs (supply-chain hardening); the
+      # trailing comment records the tag each SHA was resolved from.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Takes the pnpm version from package.json's packageManager field.
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          registry-url: 'https://registry.npmjs.org'
+          # Disabled on purpose: a publish job must not consume a cache that
+          # untrusted branch builds can write to.
+          package-manager-cache: false
+
+      # Node 24 may ship an npm older than the 11.5.1 that OIDC publishing needs.
+      - name: Ensure npm supports OIDC publishing
+        run: npm install -g npm@latest
+
+      # Guards against tagging v1.2.3 while package.json still says 1.2.2.
+      - name: Verify tag matches package version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag v$tag does not match package.json $pkg"
+            exit 1
+          fi
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Prisma generate
+        run: pnpm run prisma:generate
+
+      - name: DB push
+        run: pnpm run db:push
+
+      # prepublishOnly only builds, so the suite runs here — nothing else stands
+      # between a bad commit and the registry.
+      - name: Build
+        run: pnpm run build
+
+      - name: Test
+        run: pnpm test
+
+      # npm publish, not pnpm publish: OIDC trusted publishing is an npm CLI
+      # feature and this is the path npm documents.
+      - name: Publish
+        run: npm publish

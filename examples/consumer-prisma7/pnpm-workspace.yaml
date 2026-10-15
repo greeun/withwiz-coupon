@@ -1,0 +1,6 @@
+# Pins this sample as its own pnpm workspace root (see examples/consumer).
+allowBuilds:
+  '@prisma/client': true
+  '@prisma/engines': true
+  esbuild: true
+  prisma: true

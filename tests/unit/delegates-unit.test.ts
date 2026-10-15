@@ -4,6 +4,7 @@ import {
   createDelegateResolver,
   lockCouponRow,
   resolveModelNames,
+  resolveSchemaName,
   resolveTableNames,
 } from "../../src/delegates.js";
 import { InvalidModelNameError } from "../../src/domain/errors.js";
@@ -142,5 +143,33 @@ describe("lockCouponRow", () => {
     const rows = [{ id: "coupon-1" }];
     const tx = { $queryRaw: vi.fn().mockResolvedValue(rows) } as unknown as PrismaTxLike;
     await expect(lockCouponRow(tx, "Coupon", "coupon-1", "tenant-1")).resolves.toBe(rows);
+  });
+});
+
+describe("lockCouponRow with a schema", () => {
+  it("qualifies the table with the schema so a driver adapter's search_path does not matter", async () => {
+    const queryRaw = vi.fn().mockResolvedValue([]);
+    const tx = { $queryRaw: queryRaw } as unknown as PrismaTxLike;
+
+    await lockCouponRow(tx, "Coupon", "coupon-1", "tenant-1", "app_schema");
+
+    const [strings, ...values] = queryRaw.mock.calls[0];
+    expect(strings.join("?")).toBe(
+      'SELECT * FROM "app_schema"."Coupon" WHERE "id" = ? AND "tenantId" = ? FOR UPDATE'
+    );
+    expect(values).toEqual(["coupon-1", "tenant-1"]);
+  });
+});
+
+describe("resolveSchemaName", () => {
+  it("passes through undefined and plain identifiers", () => {
+    expect(resolveSchemaName(undefined)).toBeUndefined();
+    expect(resolveSchemaName("consumer_sample")).toBe("consumer_sample");
+  });
+
+  it("rejects anything that is not a plain identifier", () => {
+    for (const bad of ["", "a.b", 'x"; DROP TABLE "Coupon', "1abc", "has space"]) {
+      expect(() => resolveSchemaName(bad)).toThrow(InvalidModelNameError);
+    }
   });
 });

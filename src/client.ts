@@ -77,6 +77,7 @@ import {
   createDelegateResolver,
   lockCouponRow,
   resolveModelNames,
+  resolveSchemaName,
   resolveTableNames,
 } from "./delegates.js";
 import type { DelegateResolver, ModelNameMap, TableNameMap } from "./delegates.js";
@@ -121,6 +122,15 @@ export type CouponClientConfig = {
    * @example { coupon: "coupons" }
    */
   tables?: Partial<TableNameMap>;
+  /**
+   * Postgres schema that holds the coupon tables, used to qualify the
+   * `SELECT ... FOR UPDATE` row lock. Needed when the tables live outside
+   * `public` and the client uses a driver adapter (Prisma 7), whose raw
+   * queries resolve unqualified names through the connection's `search_path`.
+   *
+   * @example "billing"
+   */
+  schema?: string;
 };
 
 /**
@@ -166,6 +176,7 @@ type ResolvedConfig = Required<
   defaultTenantId?: string;
   models: ModelNameMap;
   tables: TableNameMap;
+  schema?: string;
 };
 
 function resolveConfig(config: CouponClientConfig): ResolvedConfig {
@@ -186,6 +197,7 @@ function resolveConfig(config: CouponClientConfig): ResolvedConfig {
     logger: config.logger ?? NOOP_LOGGER,
     models,
     tables: resolveTableNames(models, config.tables),
+    schema: resolveSchemaName(config.schema),
   };
 }
 
@@ -364,7 +376,7 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
   // --- delegate resolver ------------------------------------------------
   // Every Prisma delegate access below goes through this, so a consumer that
   // renamed the fragment's models only has to declare `config.models`.
-  const delegates = createDelegateResolver(cfg.models, cfg.tables);
+  const delegates = createDelegateResolver(cfg.models, cfg.tables, cfg.schema);
 
   // --- tenantId resolver (short form) -----------------------------------
   const tid = (v: string | undefined) => resolveTenantId(v, cfg.defaultTenantId);
@@ -976,7 +988,8 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
       tx,
       delegates.tables.coupon,
       couponId,
-      tenantId
+      tenantId,
+      delegates.schema
     );
     if (!Array.isArray(locked) || locked.length === 0) {
       throw new CouponNotFoundError("Coupon not found", { tenantId, couponId });

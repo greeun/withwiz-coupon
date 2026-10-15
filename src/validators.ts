@@ -431,6 +431,15 @@ export function validateCreateCampaignInput(input: CreateCampaignInput): void {
 // consumers want them for their own I/O boundary.
 // ---------------------------------------------------------------------------
 
+export const discountDurationSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("ONCE") }),
+  z.object({
+    kind: z.literal("REPEATING"),
+    months: z.number().int().min(1).max(LIMITS.DURATION_MAX_MONTHS),
+  }),
+  z.object({ kind: z.literal("FOREVER") }),
+]);
+
 export const discountPolicySchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("PERCENT"),
@@ -438,11 +447,13 @@ export const discountPolicySchema = z.discriminatedUnion("kind", [
     maxDiscount: z.number().int().nonnegative().optional(),
     minOrder: z.number().int().nonnegative().optional(),
     currency: z.string().length(3).optional(),
+    duration: discountDurationSchema.optional(),
   }),
   z.object({
     kind: z.literal("FIXED"),
     amount: z.number().int().positive(),
     currency: z.string().length(3),
     minOrder: z.number().int().nonnegative().optional(),
+    duration: discountDurationSchema.optional(),
   }),
 ]);

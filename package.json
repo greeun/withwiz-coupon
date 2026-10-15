@@ -1,7 +1,7 @@
 {
   "packageManager": "pnpm@11.10.0",
   "name": "@withwiz/coupon",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Multi-tenant, concurrency-safe coupon domain core for Prisma + Node.js applications",
   "license": "MIT",
   "author": "withwiz",
@@ -61,9 +61,9 @@
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
-    "zod": "^3.23.0",
+    "@paralleldrive/cuid2": "^2.2.2",
     "nanoid": "^5.0.0",
-    "@paralleldrive/cuid2": "^2.2.2"
+    "zod": "^3.23.0"
   },
   "peerDependencies": {
     "@prisma/client": ">=5.0.0 <8.0.0",

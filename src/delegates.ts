@@ -65,6 +65,21 @@ function assertIdentifier(kind: string, key: CouponModelKey, value: string): str
 }
 
 /**
+ * Validates the optional Postgres schema that qualifies the raw-SQL row lock.
+ * Same identifier rule as table names, because it is interpolated the same way.
+ */
+export function resolveSchemaName(schema?: string): string | undefined {
+  if (schema === undefined) return undefined;
+  if (typeof schema !== "string" || !IDENTIFIER_RE.test(schema)) {
+    throw new InvalidModelNameError(
+      `Invalid schema name: ${JSON.stringify(schema)}. ` +
+        `Expected a plain identifier matching ${IDENTIFIER_RE.source}.`
+    );
+  }
+  return schema;
+}
+
+/**
  * Merge caller overrides over the fragment defaults.
  */
 export function resolveModelNames(overrides?: Partial<ModelNameMap>): ModelNameMap {
@@ -111,6 +126,8 @@ export type DelegateResolver = {
   readonly models: ModelNameMap;
   /** The resolved physical table names, used by the raw-SQL lock path. */
   readonly tables: TableNameMap;
+  /** Postgres schema that qualifies the raw-SQL lock path, when configured. */
+  readonly schema?: string;
 };
 
 function pick(db: PrismaTxLike, key: CouponModelKey, name: string): DelegateLike {
@@ -127,11 +144,13 @@ function pick(db: PrismaTxLike, key: CouponModelKey, name: string): DelegateLike
 
 export function createDelegateResolver(
   models: ModelNameMap,
-  tables: TableNameMap
+  tables: TableNameMap,
+  schema?: string
 ): DelegateResolver {
   const resolver = {
     models,
     tables,
+    schema,
   } as DelegateResolver;
   for (const key of MODEL_KEYS) {
     // Bind the name once; the lookup itself stays lazy so a transaction handle
@@ -151,15 +170,22 @@ export function createDelegateResolver(
  * `tenantId` stay parameterized. `table` has already passed
  * {@link assertIdentifier}, so the interpolation cannot break out of the
  * quoted identifier.
+ *
+ * `schema` qualifies the table when given. Prisma's own queries carry the
+ * schema from the datasource, but raw SQL resolves an unqualified name through
+ * the connection's `search_path`; with a driver adapter that is usually
+ * `public`, so a consumer on another schema must name it here.
  */
 export function lockCouponRow(
   tx: PrismaTxLike,
   table: string,
   couponId: string,
-  tenantId: string
+  tenantId: string,
+  schema?: string
 ): Promise<Array<Record<string, unknown>>> {
+  const target = schema ? `"${schema}"."${table}"` : `"${table}"`;
   const parts = [
-    `SELECT * FROM "${table}" WHERE "id" = `,
+    `SELECT * FROM ${target} WHERE "id" = `,
     ` AND "tenantId" = `,
     ` FOR UPDATE`,
   ];

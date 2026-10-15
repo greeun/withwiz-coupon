@@ -3,7 +3,7 @@
 export { createCouponClient } from "./client.js";
 export type { CouponClient, CouponClientConfig } from "./client.js";
 
-export { calculate as calculateDiscount, validateDiscountPolicy } from "./discount.js";
+export { calculate as calculateDiscount, validateDiscountPolicy, resolveDuration } from "./discount.js";
 
 // --- Model name mapping (for consumers whose schema renames the fragment) ---
 export { DEFAULT_MODEL_NAMES } from "./delegates.js";
@@ -32,6 +32,7 @@ export type {
   Redemption,
   AuditLog,
   DiscountPolicy,
+  DiscountDuration,
   EligibilityRules,
   DiscountInput,
   DiscountBreakdown,

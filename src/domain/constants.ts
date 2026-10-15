@@ -93,6 +93,8 @@ export const LIMITS = {
   ELIGIBILITY_ENTRY_MAX_LENGTH: 128,
   /** [L] Length cap for `context.plan / productId / categoryId`. */
   CONTEXT_VALUE_MAX_LENGTH: 128,
+  /** Upper bound for `duration.months` on a REPEATING discount. */
+  DURATION_MAX_MONTHS: 36,
 } as const;
 
 /**

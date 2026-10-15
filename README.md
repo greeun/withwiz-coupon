@@ -142,9 +142,37 @@ const coupon = createCouponClient({
 });
 ```
 
-Both maps accept plain SQL identifiers only (`[A-Za-z_][A-Za-z0-9_]*`); a
+### Tables outside `public` with a driver adapter
+
+The row lock is raw SQL, so it does not inherit the schema from your Prisma
+datasource. With a driver adapter (Prisma 7, e.g. `@prisma/adapter-pg`) an
+unqualified table name resolves through the connection's `search_path`, which
+is usually `public`. If the coupon tables live in another schema, name it:
+
+```ts
+const coupon = createCouponClient({ prisma, schema: "billing" });
+```
+
+Without it, `redeem()` cannot see the coupon row and fails with `NOT_FOUND`.
+
+`models`, `tables` and `schema` accept plain SQL identifiers only (`[A-Za-z_][A-Za-z0-9_]*`); a
 malformed name raises `InvalidModelNameError` when the client is created, and
 a name that matches no delegate raises it on the first call that needs it.
+
+## Discount duration
+
+A policy may declare how many billing cycles it applies to:
+
+```ts
+discount: { kind: "PERCENT", percent: 20, duration: { kind: "REPEATING", months: 3 } }
+```
+
+`ONCE` (the default when `duration` is absent), `REPEATING` (1 to 36 months) or
+`FOREVER`. The package stores and validates it and returns it inside
+`coupon.discount` and `discount.appliedPolicy`; `resolveDuration(policy)` gives the
+effective value. Redemption still happens once. To discount later cycles of a
+subscription, keep the policy and call `calculateDiscount({ subtotal, currency, policy })`
+for each cycle on your side.
 
 ## Errors
 
@@ -297,6 +325,16 @@ package honest about working outside this repo:
 ```bash
 cd examples/consumer
 export DATABASE_URL="postgresql://postgres:postgres@localhost:13011/coupon_test?schema=consumer_sample"
+pnpm install --frozen-lockfile
+pnpm run prisma:generate && pnpm run db:push && pnpm run test
+```
+
+`examples/consumer-prisma7` runs the same kind of checks on Prisma 7 with
+`@prisma/adapter-pg`, a renamed `CouponCampaign` model and a non-`public` schema:
+
+```bash
+cd examples/consumer-prisma7
+export DATABASE_URL="postgresql://postgres:postgres@localhost:13011/coupon_test?schema=consumer_prisma7"
 pnpm install --frozen-lockfile
 pnpm run prisma:generate && pnpm run db:push && pnpm run test
 ```

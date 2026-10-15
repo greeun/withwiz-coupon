@@ -51,6 +51,7 @@ jobs:
           cache-dependency-path: |
             pnpm-lock.yaml
             examples/consumer/pnpm-lock.yaml
+            examples/consumer-prisma7/pnpm-lock.yaml
 
       - name: Install
         run: pnpm install --frozen-lockfile
@@ -100,3 +101,24 @@ jobs:
 
       - name: Pack (dry run)
         run: pnpm pack --pack-destination /tmp
+
+      # Same check on Prisma 7 with @prisma/adapter-pg, the setup most new
+      # consumers run. It renames Campaign and lives outside `public`, which is
+      # what exposed the unqualified row-lock query.
+      - name: Consumer sample (Prisma 7 adapter) — install
+        working-directory: examples/consumer-prisma7
+        run: pnpm install --frozen-lockfile
+
+      - name: Consumer sample (Prisma 7 adapter) — prisma generate + db push
+        working-directory: examples/consumer-prisma7
+        env:
+          DATABASE_URL: "postgresql://postgres:postgres@localhost:13011/coupon_test?schema=consumer_prisma7"
+        run: |
+          pnpm run prisma:generate
+          pnpm run db:push
+
+      - name: Consumer sample (Prisma 7 adapter) — test
+        working-directory: examples/consumer-prisma7
+        env:
+          DATABASE_URL: "postgresql://postgres:postgres@localhost:13011/coupon_test?schema=consumer_prisma7"
+        run: pnpm run test

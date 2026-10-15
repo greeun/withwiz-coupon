@@ -5,6 +5,7 @@
 
 import {
   createCouponClient,
+  resolveDuration,
   COUPON_STATUS,
   COUPON_REJECT_REASON,
   AUDIT_ACTION,
@@ -37,6 +38,7 @@ import type {
   Redemption,
   AuditLog,
   DiscountPolicy,
+  DiscountDuration,
   EligibilityRules,
   DiscountInput,
   DiscountBreakdown,
@@ -129,6 +131,8 @@ declare const _iss: Issuance;
 declare const _red: Redemption;
 declare const _aud: AuditLog;
 declare const _dp: DiscountPolicy;
+declare const _dd: DiscountDuration;
+const _rd: DiscountDuration = resolveDuration(_dp);
 declare const _er: EligibilityRules;
 declare const _di: DiscountInput;
 declare const _db: DiscountBreakdown;

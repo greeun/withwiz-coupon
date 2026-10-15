@@ -12,7 +12,13 @@ import {
   MinimumOrderNotMetError,
   ValidationError,
 } from "./domain/errors.js";
-import type { DiscountBreakdown, DiscountInput, DiscountPolicy } from "./domain/types.js";
+import { LIMITS } from "./domain/constants.js";
+import type {
+  DiscountBreakdown,
+  DiscountDuration,
+  DiscountInput,
+  DiscountPolicy,
+} from "./domain/types.js";
 
 function ensureNonNegativeInteger(name: string, value: number): void {
   if (!Number.isFinite(value) || !Number.isInteger(value) || value < 0) {
@@ -83,6 +89,7 @@ export function validateDiscountPolicy(policy: DiscountPolicy): void {
     if (policy.currency !== undefined) {
       ensureCurrency(policy.currency);
     }
+    validateDuration(policy.duration);
     return;
   }
   if (policy.kind === "FIXED") {
@@ -108,6 +115,7 @@ export function validateDiscountPolicy(policy: DiscountPolicy): void {
         );
       }
     }
+    validateDuration(policy.duration);
     return;
   }
   throw new InvalidDiscountPolicyError(
@@ -198,4 +206,33 @@ function extractPolicyCurrency(policy: DiscountPolicy): string | undefined {
   if (policy.kind === "FIXED") return policy.currency;
   if (policy.kind === "PERCENT") return policy.currency;
   return undefined;
+}
+
+function validateDuration(duration: unknown): void {
+  if (duration === undefined) return;
+  if (!duration || typeof duration !== "object") {
+    throw new InvalidDiscountPolicyError("duration must be an object");
+  }
+  const kind = (duration as { kind?: unknown }).kind;
+  if (kind === "ONCE" || kind === "FOREVER") return;
+  if (kind === "REPEATING") {
+    const months = (duration as { months?: unknown }).months;
+    if (
+      typeof months !== "number" ||
+      !Number.isInteger(months) ||
+      months < 1 ||
+      months > LIMITS.DURATION_MAX_MONTHS
+    ) {
+      throw new InvalidDiscountPolicyError(
+        `duration.months must be an integer in [1, ${LIMITS.DURATION_MAX_MONTHS}] (got ${String(months)})`
+      );
+    }
+    return;
+  }
+  throw new InvalidDiscountPolicyError(`unknown duration kind: ${String(kind)}`);
+}
+
+/** The effective duration of a policy. Policies without one apply ONCE. */
+export function resolveDuration(policy: DiscountPolicy): DiscountDuration {
+  return policy.duration ?? { kind: "ONCE" };
 }

@@ -7,6 +7,16 @@ import type { CouponStatus, CampaignStatus, CouponRejectReason } from "./constan
 
 // --- Policy / Eligibility ---------------------------------------------------
 
+/**
+ * How many billing cycles a discount applies to. Absent = ONCE.
+ * The package records it; applying it to recurring charges is the consumer's job
+ * (re-run `calculateDiscount` per cycle with the stored policy).
+ */
+export type DiscountDuration =
+  | { kind: "ONCE" }
+  | { kind: "REPEATING"; months: number }
+  | { kind: "FOREVER" };
+
 export type DiscountPolicy =
   | {
       kind: "PERCENT";
@@ -14,12 +24,14 @@ export type DiscountPolicy =
       maxDiscount?: number;
       minOrder?: number;
       currency?: string;
+      duration?: DiscountDuration;
     }
   | {
       kind: "FIXED";
       amount: number;
       currency: string;
       minOrder?: number;
+      duration?: DiscountDuration;
     };
 
 export type EligibilityRules = {
@@ -282,6 +294,13 @@ export type CampaignIssueArgs = {
   codeLength?: number;
   maxAttempts?: number;
   actorId?: string;
+  /**
+   * Redemption limits stamped on each issued code. Unset = unlimited, which
+   * is rarely what a batch of unique codes wants: pass `maxRedemptions: 1`
+   * for single-use codes.
+   */
+  maxRedemptions?: number | null;
+  maxRedemptionsPerUser?: number | null;
 };
 
 export type CampaignSummary = {

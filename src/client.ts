@@ -1400,6 +1400,8 @@ export function createCouponClient(config: CouponClientConfig): CouponClient {
         endsAt: campaign.endsAt,
         maxAttempts: args.maxAttempts,
         eligibility: campaign.eligibility,
+        maxRedemptions: args.maxRedemptions,
+        maxRedemptionsPerUser: args.maxRedemptionsPerUser,
         actorId: args.actorId,
       });
     },

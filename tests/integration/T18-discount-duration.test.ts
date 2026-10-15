@@ -47,3 +47,41 @@ describe("T-18 discount duration round-trip", () => {
     ).rejects.toBeInstanceOf(InvalidDiscountPolicyError);
   });
 });
+
+describe("T-18b campaign issue carries redemption limits", () => {
+  const prisma = getPrisma();
+  afterAll(async () => {
+    await disconnectPrisma();
+  });
+
+  it("codes issued with maxRedemptions=1 are single-use across users", async () => {
+    const client = createCouponClient({ prisma: asPrismaLike(prisma), defaultTenantId: freshTenantId("t18d") });
+    const campaign = await client.campaigns.create({
+      name: "SINGLE",
+      discount: { kind: "FIXED", amount: 100, currency: "USD" },
+    });
+    const issued = await client.campaigns.issue({
+      campaignId: campaign.id,
+      count: 1,
+      maxRedemptions: 1,
+      maxRedemptionsPerUser: 1,
+    });
+    const [code] = issued.codes;
+    expect(issued.created[0].maxRedemptions).toBe(1);
+    expect(issued.created[0].maxRedemptionsPerUser).toBe(1);
+    await client.redeem({ code, userId: "org_1", orderRef: "o1", subtotal: 1000, currency: "USD" });
+    const second = await client.validate({ code, userId: "org_2", subtotal: 1000, currency: "USD" });
+    expect(second).toEqual({ ok: false, reason: "EXHAUSTED" });
+  });
+
+  it("limits stay unset when not given (backward compatible)", async () => {
+    const client = createCouponClient({ prisma: asPrismaLike(prisma), defaultTenantId: freshTenantId("t18e") });
+    const campaign = await client.campaigns.create({
+      name: "OPEN",
+      discount: { kind: "FIXED", amount: 100, currency: "USD" },
+    });
+    const issued = await client.campaigns.issue({ campaignId: campaign.id, count: 1 });
+    expect(issued.created[0].maxRedemptions).toBeNull();
+    expect(issued.created[0].maxRedemptionsPerUser).toBeNull();
+  });
+});

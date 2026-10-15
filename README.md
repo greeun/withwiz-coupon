@@ -54,7 +54,12 @@ const campaign = await coupon.campaigns.create({
   endsAt: new Date("2026-04-30"),
   maxCoupons: 10_000,
 });
-await coupon.campaigns.issue({ campaignId: campaign.id, count: 10_000, codeLength: 10 });
+await coupon.campaigns.issue({
+  campaignId: campaign.id,
+  count: 10_000,
+  codeLength: 10,
+  maxRedemptions: 1, // single-use codes; omit for unlimited
+});
 
 // 2) Customer applies a code at checkout (non-destructive preview)
 const preview = await coupon.validate({

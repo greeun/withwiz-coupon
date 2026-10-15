@@ -294,6 +294,13 @@ export type CampaignIssueArgs = {
   codeLength?: number;
   maxAttempts?: number;
   actorId?: string;
+  /**
+   * Redemption limits stamped on each issued code. Unset = unlimited, which
+   * is rarely what a batch of unique codes wants: pass `maxRedemptions: 1`
+   * for single-use codes.
+   */
+  maxRedemptions?: number | null;
+  maxRedemptionsPerUser?: number | null;
 };
 
 export type CampaignSummary = {

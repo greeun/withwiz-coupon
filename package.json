@@ -1,5 +1,5 @@
 {
-  "packageManager": "pnpm@11.10.0",
+  "packageManager": "pnpm@11.25.0",
   "name": "@withwiz/coupon",
   "version": "0.4.0",
   "description": "Multi-tenant, concurrency-safe coupon domain core for Prisma + Node.js applications",
